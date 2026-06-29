@@ -15,7 +15,13 @@ Install runtime/build dependencies from your distribution: Go, a C compiler, `pk
 The production ASR adapter is behind the `sherpa` build tag so ordinary unit tests can run on systems that do not have sherpa's native runtime libraries on the dynamic linker path:
 
 ```sh
-CGO_ENABLED=1 go build -tags "sherpa pipewire" -trimpath -ldflags "-s -w" -o sway-voice ./cmd/sway-voice
+CGO_ENABLED=1 CGO_CFLAGS_ALLOW="-fno-strict-overflow" go build -tags "sherpa pipewire" -trimpath -ldflags "-s -w" -o sway-voice ./cmd/sway-voice
+```
+
+For a Nix development shell with PipeWire headers and pkg-config metadata:
+
+```sh
+nix-shell
 ```
 
 For development tests that do not load native ASR libraries:

@@ -3,7 +3,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 BIN ?= sway-voice
 BUILD_TAGS ?= sherpa pipewire
-GO_ENV ?= CGO_ENABLED=1
+GO_ENV ?= CGO_ENABLED=1 CGO_CFLAGS_ALLOW=-fno-strict-overflow
 
 .PHONY: build test test-sherpa test-pipewire test-model install clean
 

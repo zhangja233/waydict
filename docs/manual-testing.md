@@ -5,7 +5,7 @@ Use this checklist for the production path that cannot be fully verified by ordi
 ## Build
 
 ```sh
-CGO_ENABLED=1 go build -tags "sherpa pipewire" -trimpath -ldflags "-s -w" -o sway-voice ./cmd/sway-voice
+CGO_ENABLED=1 CGO_CFLAGS_ALLOW="-fno-strict-overflow" go build -tags "sherpa pipewire" -trimpath -ldflags "-s -w" -o sway-voice ./cmd/sway-voice
 ```
 
 Expected: the build succeeds on a machine with `pkg-config`, `libpipewire-0.3` development headers, a C compiler, and sherpa-onnx native libraries available to the dynamic linker.
