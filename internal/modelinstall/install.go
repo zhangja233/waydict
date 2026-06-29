@@ -65,6 +65,11 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	if err := writeChecksums(staging); err != nil {
 		return "", err
 	}
+	return activateInstall(base, staging)
+}
+
+func activateInstall(base, staging string) (string, error) {
+	final := filepath.Join(base, model.ParakeetV3Int8ID)
 	backup := final + ".old"
 	_ = os.RemoveAll(backup)
 	if _, err := os.Stat(final); err == nil {

@@ -79,6 +79,55 @@ func TestWriteMetadataFiles(t *testing.T) {
 	}
 }
 
+func TestActivateInstallUpdatesCurrentSymlink(t *testing.T) {
+	base := t.TempDir()
+	final := filepath.Join(base, model.ParakeetV3Int8ID)
+	if err := os.Mkdir(final, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(final, "marker"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldCurrent := filepath.Join(base, "old-current")
+	if err := os.Mkdir(oldCurrent, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(oldCurrent, filepath.Join(base, "current")); err != nil {
+		t.Fatal(err)
+	}
+	staging := final + ".new"
+	if err := os.Mkdir(staging, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "marker"), []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := activateInstall(base, staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != final {
+		t.Fatalf("final path = %q, want %q", got, final)
+	}
+	body, err := os.ReadFile(filepath.Join(final, "marker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "new" {
+		t.Fatalf("marker = %q, want new", body)
+	}
+	if _, err := os.Stat(final + ".old"); !os.IsNotExist(err) {
+		t.Fatalf("backup remains: %v", err)
+	}
+	target, err := os.Readlink(filepath.Join(base, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != final {
+		t.Fatalf("current target = %q, want %q", target, final)
+	}
+}
+
 func writeTinyModel(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
