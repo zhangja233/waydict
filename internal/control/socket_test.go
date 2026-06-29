@@ -90,6 +90,51 @@ func TestPrepareSocketPathCreatesPrivateDirectory(t *testing.T) {
 	}
 }
 
+func TestPrepareSocketRejectsNonSocketPath(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway-voice.sock")
+	if err := os.WriteFile(socket, []byte("not a socket"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocket(socket); err == nil {
+		t.Fatal("expected non-socket path error")
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("non-socket path was removed: %v", err)
+	}
+}
+
+func TestPrepareSocketRejectsActiveSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway-voice.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := prepareSocket(socket); err == nil {
+		t.Fatal("expected active socket error")
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("active socket path was removed: %v", err)
+	}
+}
+
+func TestPrepareSocketRemovesStaleSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "sway-voice.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocket(socket); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Fatalf("stale socket still exists: %v", err)
+	}
+}
+
 func startTestServer(t *testing.T, handler Handler) (string, func()) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "control", "sway-voice.sock")

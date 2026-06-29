@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"sway-voice/pkg/api"
 )
@@ -33,7 +34,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := prepareSocketPath(s.socket); err != nil {
 		return err
 	}
-	_ = os.Remove(s.socket)
+	if err := prepareSocket(s.socket); err != nil {
+		return err
+	}
 	ln, err := net.Listen("unix", s.socket)
 	if err != nil {
 		return err
@@ -115,6 +118,25 @@ func prepareSocketPath(socket string) error {
 		return err
 	}
 	return os.Chmod(dir, 0700)
+}
+
+func prepareSocket(socket string) error {
+	st, err := os.Lstat(socket)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if st.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket path %s", socket)
+	}
+	conn, err := net.DialTimeout("unix", socket, 100*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("control socket already has a listener at %s", socket)
+	}
+	return os.Remove(socket)
 }
 
 func checkSocketOwner(socket string) error {
