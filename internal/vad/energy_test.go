@@ -46,3 +46,69 @@ func TestEnergySegmentBoundary(t *testing.T) {
 		t.Fatalf("bad segment: %+v", segs[0])
 	}
 }
+
+func TestEnergyDropsShortEndpointedSegment(t *testing.T) {
+	cfg := testEnergyConfig()
+	s := NewEnergySegmenter(cfg, 16000)
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		if segs := s.Feed(testChunk(0.1), now); len(segs) != 0 {
+			t.Fatalf("unexpected speech segment: %v", segs)
+		}
+	}
+	if !s.SegmentOpen() {
+		t.Fatal("segment was not open before endpoint")
+	}
+	if segs := s.Feed(testChunk(0), now); len(segs) != 0 {
+		t.Fatalf("unexpected segment before endpoint: %v", segs)
+	}
+	if segs := s.Feed(testChunk(0), now); len(segs) != 0 {
+		t.Fatalf("short endpointed segment was not dropped: %v", segs)
+	}
+	if s.SegmentOpen() {
+		t.Fatal("short endpointed segment remained open")
+	}
+}
+
+func TestEnergyCommitKeepsShortOpenSegment(t *testing.T) {
+	cfg := testEnergyConfig()
+	s := NewEnergySegmenter(cfg, 16000)
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		if segs := s.Feed(testChunk(0.1), now); len(segs) != 0 {
+			t.Fatalf("unexpected speech segment: %v", segs)
+		}
+	}
+	segs := s.Flush(true, now)
+	if len(segs) != 1 {
+		t.Fatalf("segments = %d, want 1", len(segs))
+	}
+	if segs[0].Duration >= 300*time.Millisecond {
+		t.Fatalf("segment duration = %s, want shorter than 300ms", segs[0].Duration)
+	}
+	if len(segs[0].Samples) == 0 {
+		t.Fatal("committed segment had no samples")
+	}
+	if s.SegmentOpen() {
+		t.Fatal("segment remained open after commit")
+	}
+}
+
+func testEnergyConfig() config.VAD {
+	cfg := config.Defaults().VAD
+	cfg.Threshold = 0.01
+	cfg.MinSpeechMS = 20
+	cfg.MinSilenceMS = 20
+	cfg.SpeechPadMS = 0
+	cfg.PreRollMS = 0
+	cfg.MaxSpeechSeconds = 3
+	return cfg
+}
+
+func testChunk(v float32) []float32 {
+	out := make([]float32, 160)
+	for i := range out {
+		out[i] = v
+	}
+	return out
+}
