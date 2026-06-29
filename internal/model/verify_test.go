@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 func TestCheckDirAcceptsReadableRequiredFiles(t *testing.T) {

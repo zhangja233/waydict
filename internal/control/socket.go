@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"sway-voice/pkg/api"
+	"waydict/pkg/api"
 )
 
 type Handler interface {

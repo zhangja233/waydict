@@ -3,7 +3,7 @@ package app
 import (
 	"time"
 
-	"sway-voice/pkg/api"
+	"waydict/pkg/api"
 )
 
 func modePtr(mode api.Mode) *api.Mode {

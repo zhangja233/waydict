@@ -15,7 +15,7 @@ func TestLoadExpandValidate(t *testing.T) {
 	path := filepath.Join(tmp, "config.toml")
 	if err := os.WriteFile(path, []byte(`
 [daemon]
-socket = "$XDG_RUNTIME_DIR/sway-voice/sway-voice.sock"
+socket = "$XDG_RUNTIME_DIR/waydict/waydict.sock"
 [asr]
 num_threads = 1
 model_dir = "~/models/parakeet"
@@ -26,7 +26,7 @@ model_dir = "~/models/parakeet"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Daemon.Socket != filepath.Join(tmp, "run", "sway-voice", "sway-voice.sock") {
+	if cfg.Daemon.Socket != filepath.Join(tmp, "run", "waydict", "waydict.sock") {
 		t.Fatalf("socket was not expanded: %q", cfg.Daemon.Socket)
 	}
 	if cfg.ASR.ModelDir != filepath.Join(tmp, "home", "models", "parakeet") {

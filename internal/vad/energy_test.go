@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 func TestEnergySegmentBoundary(t *testing.T) {

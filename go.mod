@@ -1,4 +1,4 @@
-module sway-voice
+module waydict
 
 go 1.23.2
 

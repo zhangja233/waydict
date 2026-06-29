@@ -3,7 +3,7 @@ package vad
 import (
 	"time"
 
-	"sway-voice/internal/asr"
+	"waydict/internal/asr"
 )
 
 type Segmenter interface {

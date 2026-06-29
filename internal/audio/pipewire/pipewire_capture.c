@@ -171,7 +171,7 @@ int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out) {
     return -3;
   }
   atomic_store(&c->level_mdb, -120000);
-  c->loop = pw_thread_loop_new("sway-voice-capture", NULL);
+  c->loop = pw_thread_loop_new("waydict-capture", NULL);
   if (c->loop == NULL) goto fail;
   pw_thread_loop_lock(c->loop);
   c->context = pw_context_new(pw_thread_loop_get_loop(c->loop), NULL, 0);
@@ -191,7 +191,7 @@ int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out) {
   if (config->target_object != NULL && config->target_object[0] != '\0') {
     pw_properties_set(props, PW_KEY_TARGET_OBJECT, config->target_object);
   }
-  c->stream = pw_stream_new(c->core, "sway-voice-input", props);
+  c->stream = pw_stream_new(c->core, "waydict-input", props);
   if (c->stream == NULL) goto fail_unlock;
   pw_stream_add_listener(c->stream, &c->stream_listener, &stream_events, c);
 

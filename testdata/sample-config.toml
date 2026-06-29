@@ -1,5 +1,5 @@
 [daemon]
-socket = "$XDG_RUNTIME_DIR/sway-voice/sway-voice.sock"
+socket = "$XDG_RUNTIME_DIR/waydict/waydict.sock"
 preload_model = true
 auto_stop_after_silence_seconds = 120
 redact_transcripts_in_logs = true
@@ -17,7 +17,7 @@ start_paused = true
 
 [vad]
 engine = "silero"
-model = "~/.local/share/sway-voice/models/silero_vad.onnx"
+model = "~/.local/share/waydict/models/silero_vad.onnx"
 window_size = 512
 threshold = 0.35
 negative_threshold = 0.15
@@ -35,7 +35,7 @@ decoding_method = "greedy_search"
 num_threads = 4
 max_active_paths = 4
 blank_penalty = 0.0
-model_dir = "~/.local/share/sway-voice/models/parakeet-tdt-0.6b-v3-int8"
+model_dir = "~/.local/share/waydict/models/parakeet-tdt-0.6b-v3-int8"
 encoder = "encoder.int8.onnx"
 decoder = "decoder.int8.onnx"
 joiner = "joiner.int8.onnx"
@@ -62,5 +62,5 @@ focus_check = true
 
 [debug]
 save_audio_segments = false
-save_audio_dir = "~/.local/state/sway-voice/segments"
+save_audio_dir = "~/.local/state/waydict/segments"
 log_transcripts = false

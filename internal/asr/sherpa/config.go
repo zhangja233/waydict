@@ -3,7 +3,7 @@ package sherpa
 import (
 	"path/filepath"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 type Paths struct {

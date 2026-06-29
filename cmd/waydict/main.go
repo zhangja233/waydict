@@ -16,20 +16,20 @@ import (
 	"syscall"
 	"time"
 
-	"sway-voice/internal/app"
-	"sway-voice/internal/asr"
-	sherpaasr "sway-voice/internal/asr/sherpa"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/audio/pipewire"
-	"sway-voice/internal/buildinfo"
-	"sway-voice/internal/config"
-	"sway-voice/internal/control"
-	"sway-voice/internal/exitcode"
-	"sway-voice/internal/inject"
-	"sway-voice/internal/model"
-	"sway-voice/internal/modelinstall"
-	"sway-voice/internal/swayipc"
-	"sway-voice/pkg/api"
+	"waydict/internal/app"
+	"waydict/internal/asr"
+	sherpaasr "waydict/internal/asr/sherpa"
+	"waydict/internal/audio"
+	"waydict/internal/audio/pipewire"
+	"waydict/internal/buildinfo"
+	"waydict/internal/config"
+	"waydict/internal/control"
+	"waydict/internal/exitcode"
+	"waydict/internal/inject"
+	"waydict/internal/model"
+	"waydict/internal/modelinstall"
+	"waydict/internal/swayipc"
+	"waydict/pkg/api"
 )
 
 func main() {
@@ -69,16 +69,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
-  sway-voice daemon [--config PATH] [--foreground] [--log-level LEVEL]
-  sway-voice start [--mode toggle|oneshot|hold]
-  sway-voice stop [--commit|--discard]
-  sway-voice toggle
-  sway-voice status [--json]
-  sway-voice transcribe --file PATH [--inject]
-  sway-voice model check [--config PATH] [--dir PATH]
-  sway-voice model install parakeet-v3-int8 [--dir PATH]
-  sway-voice bench --file PATH [--repeat N]
-  sway-voice doctor`)
+  waydict daemon [--config PATH] [--foreground] [--log-level LEVEL]
+  waydict start [--mode toggle|oneshot|hold]
+  waydict stop [--commit|--discard]
+  waydict toggle
+  waydict status [--json]
+  waydict transcribe --file PATH [--inject]
+  waydict model check [--config PATH] [--dir PATH]
+  waydict model install parakeet-v3-int8 [--dir PATH]
+  waydict bench --file PATH [--repeat N]
+  waydict doctor`)
 }
 
 func runDaemon(args []string, stderr io.Writer) int {
@@ -334,7 +334,7 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		return exitcode.Success
 	case "install":
 		if len(args) < 2 || args[1] != "parakeet-v3-int8" {
-			fmt.Fprintln(stderr, "usage: sway-voice model install parakeet-v3-int8 [--dir PATH]")
+			fmt.Fprintln(stderr, "usage: waydict model install parakeet-v3-int8 [--dir PATH]")
 			return exitcode.Usage
 		}
 		fs := flag.NewFlagSet("model install", flag.ContinueOnError)

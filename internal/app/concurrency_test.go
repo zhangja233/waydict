@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/config"
-	"sway-voice/pkg/api"
+	"waydict/internal/asr"
+	"waydict/internal/audio"
+	"waydict/internal/config"
+	"waydict/pkg/api"
 )
 
 // raceCheckSegmenter flags if it is ever entered by two goroutines at once,

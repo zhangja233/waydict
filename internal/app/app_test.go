@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/config"
-	"sway-voice/internal/control"
-	"sway-voice/internal/swayipc"
-	"sway-voice/internal/vad"
-	"sway-voice/pkg/api"
+	"waydict/internal/asr"
+	"waydict/internal/audio"
+	"waydict/internal/config"
+	"waydict/internal/control"
+	"waydict/internal/swayipc"
+	"waydict/internal/vad"
+	"waydict/pkg/api"
 )
 
 func TestStateTransitionsStartStop(t *testing.T) {

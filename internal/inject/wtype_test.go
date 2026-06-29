@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 func TestWtypeUsesStdin(t *testing.T) {
@@ -14,12 +14,12 @@ func TestWtypeUsesStdin(t *testing.T) {
 	out := filepath.Join(tmp, "typed.txt")
 	args := filepath.Join(tmp, "args.txt")
 	fake := filepath.Join(tmp, "fake-wtype")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SVIP_WTYPE_ARGS\"\ncat > \"$SVIP_WTYPE_OUT\"\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WAYDICT_WTYPE_ARGS\"\ncat > \"$WAYDICT_WTYPE_OUT\"\n"
 	if err := os.WriteFile(fake, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SVIP_WTYPE_OUT", out)
-	t.Setenv("SVIP_WTYPE_ARGS", args)
+	t.Setenv("WAYDICT_WTYPE_OUT", out)
+	t.Setenv("WAYDICT_WTYPE_ARGS", args)
 	cfg := config.Defaults().Injection
 	cfg.WtypePath = fake
 	w := NewWtype(cfg)

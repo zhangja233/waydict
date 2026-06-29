@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/config"
+	"waydict/internal/asr"
+	"waydict/internal/config"
 )
 
 type Engine struct {

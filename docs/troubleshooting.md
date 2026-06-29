@@ -2,7 +2,7 @@
 
 ## No Text Typed
 
-Run `sway-voice doctor`. Check that `wtype` is installed, the daemon is running, the model files pass `sway-voice model check`, and `status --json` does not show a recent `wtype_failed`, `pipewire_unavailable`, or `recognition_failed` error.
+Run `waydict doctor`. Check that `wtype` is installed, the daemon is running, the model files pass `waydict model check`, and `status --json` does not show a recent `wtype_failed`, `pipewire_unavailable`, or `recognition_failed` error.
 
 ## Wrong Window Receives Text
 
@@ -14,7 +14,7 @@ Check that the PipeWire user service is running and that your session has microp
 
 ## High Latency
 
-Run `sway-voice bench --file sample.wav --repeat 3`, then adjust `[asr].num_threads`. Lower `[vad].min_silence_ms` only if words are not being cut off. The default endpoint delay is intentionally conservative.
+Run `waydict bench --file sample.wav --repeat 3`, then adjust `[asr].num_threads`. Lower `[vad].min_silence_ms` only if words are not being cut off. The default endpoint delay is intentionally conservative.
 
 ## High Memory Use
 
@@ -25,8 +25,8 @@ The Parakeet v3 INT8 model is large. The target loaded RSS is under roughly 2.5 
 Run:
 
 ```sh
-sway-voice model install parakeet-v3-int8
-sway-voice model check
+waydict model install parakeet-v3-int8
+waydict model check
 ```
 
 If using a manual model download, point `[asr].model_dir` at the directory containing `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt`.
@@ -41,4 +41,4 @@ Make sure the command runs inside the Sway session and `$SWAYSOCK` is set. `tran
 
 ## PipeWire Session Issues
 
-Ensure `$XDG_RUNTIME_DIR` is set and the PipeWire user service is active. Restart the daemon after fixing the session. PipeWire integration tests are optional and should be run only with `SWAY_VOICE_TEST_PIPEWIRE=1`.
+Ensure `$XDG_RUNTIME_DIR` is set and the PipeWire user service is active. Restart the daemon after fixing the session. PipeWire integration tests are optional and should be run only with `WAYDICT_TEST_PIPEWIRE=1`.

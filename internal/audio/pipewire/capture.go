@@ -5,8 +5,8 @@ package pipewire
 import (
 	"context"
 
-	"sway-voice/internal/audio"
-	"sway-voice/internal/config"
+	"waydict/internal/audio"
+	"waydict/internal/config"
 )
 
 type Capture struct {

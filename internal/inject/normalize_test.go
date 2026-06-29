@@ -3,7 +3,7 @@ package inject
 import (
 	"testing"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 func TestPostProcessorPunctuationSpacing(t *testing.T) {

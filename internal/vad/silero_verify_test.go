@@ -7,19 +7,19 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/config"
+	"waydict/internal/asr"
+	"waydict/internal/audio"
+	"waydict/internal/config"
 )
 
 // TestSileroVerifyWAV runs the configured silero VAD over a real recording so
 // the engine can be checked end-to-end on hardware audio. It is skipped unless
-// SWAY_VOICE_VERIFY_WAV points at a speech file; override the model location
-// with SWAY_VOICE_VERIFY_MODEL.
+// WAYDICT_VERIFY_WAV points at a speech file; override the model location
+// with WAYDICT_VERIFY_MODEL.
 func TestSileroVerifyWAV(t *testing.T) {
-	wavPath := os.Getenv("SWAY_VOICE_VERIFY_WAV")
+	wavPath := os.Getenv("WAYDICT_VERIFY_WAV")
 	if wavPath == "" {
-		t.Skip("set SWAY_VOICE_VERIFY_WAV to a speech recording to run")
+		t.Skip("set WAYDICT_VERIFY_WAV to a speech recording to run")
 	}
 	clip, err := audio.ReadFile(wavPath)
 	if err != nil {
@@ -27,7 +27,7 @@ func TestSileroVerifyWAV(t *testing.T) {
 	}
 	cfg := config.Defaults().VAD
 	cfg.Engine = "silero"
-	if m := os.Getenv("SWAY_VOICE_VERIFY_MODEL"); m != "" {
+	if m := os.Getenv("WAYDICT_VERIFY_MODEL"); m != "" {
 		cfg.Model = m
 	}
 	if _, err := os.Stat(cfg.Model); err != nil {

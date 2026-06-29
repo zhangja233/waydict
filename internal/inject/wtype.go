@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 type Wtype struct {

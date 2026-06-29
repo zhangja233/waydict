@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 func TestPipeWireCaptureLifecycle(t *testing.T) {
-	if os.Getenv("SWAY_VOICE_TEST_PIPEWIRE") != "1" {
-		t.Skip("set SWAY_VOICE_TEST_PIPEWIRE=1 to run PipeWire integration tests")
+	if os.Getenv("WAYDICT_TEST_PIPEWIRE") != "1" {
+		t.Skip("set WAYDICT_TEST_PIPEWIRE=1 to run PipeWire integration tests")
 	}
 	cfg := config.Defaults().Audio
 	c, err := New(cfg)

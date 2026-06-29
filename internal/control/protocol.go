@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 
-	"sway-voice/pkg/api"
+	"waydict/pkg/api"
 )
 
 const Version = 1

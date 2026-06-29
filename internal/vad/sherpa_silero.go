@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/config"
+	"waydict/internal/asr"
+	"waydict/internal/config"
 
 	onnx "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/pkg/api"
+	"waydict/pkg/api"
 )
 
 type handlerFunc func(context.Context, Request) Response
@@ -62,7 +62,7 @@ func TestPrepareSocketPathDoesNotChmodExistingDirectory(t *testing.T) {
 	if err := os.Mkdir(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(dir, "sway-voice.sock")
+	socket := filepath.Join(dir, "waydict.sock")
 	if err := prepareSocketPath(socket); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestPrepareSocketPathDoesNotChmodExistingDirectory(t *testing.T) {
 
 func TestPrepareSocketPathCreatesPrivateDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "new", "control")
-	socket := filepath.Join(dir, "sway-voice.sock")
+	socket := filepath.Join(dir, "waydict.sock")
 	if err := prepareSocketPath(socket); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestPrepareSocketPathCreatesPrivateDirectory(t *testing.T) {
 }
 
 func TestPrepareSocketRejectsNonSocketPath(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "sway-voice.sock")
+	socket := filepath.Join(t.TempDir(), "waydict.sock")
 	if err := os.WriteFile(socket, []byte("not a socket"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestPrepareSocketRejectsNonSocketPath(t *testing.T) {
 }
 
 func TestPrepareSocketRejectsActiveSocket(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "sway-voice.sock")
+	socket := filepath.Join(t.TempDir(), "waydict.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestPrepareSocketRejectsActiveSocket(t *testing.T) {
 }
 
 func TestPrepareSocketRemovesStaleSocket(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "sway-voice.sock")
+	socket := filepath.Join(t.TempDir(), "waydict.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestPrepareSocketRemovesStaleSocket(t *testing.T) {
 
 func startTestServer(t *testing.T, handler Handler) (string, func()) {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "control", "sway-voice.sock")
+	socket := filepath.Join(t.TempDir(), "control", "waydict.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

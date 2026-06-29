@@ -2,7 +2,7 @@
 
 package vad
 
-import "sway-voice/internal/config"
+import "waydict/internal/config"
 
 func NewSegmenter(cfg config.VAD, sampleRate int) Segmenter {
 	return NewEnergySegmenter(cfg, sampleRate)

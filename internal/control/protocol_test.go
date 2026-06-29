@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"sway-voice/pkg/api"
+	"waydict/pkg/api"
 )
 
 func TestProtocolRoundTrip(t *testing.T) {

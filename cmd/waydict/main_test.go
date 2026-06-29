@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/config"
-	"sway-voice/internal/control"
-	"sway-voice/internal/exitcode"
-	"sway-voice/internal/inject"
-	"sway-voice/internal/model"
-	"sway-voice/internal/swayipc"
+	"waydict/internal/asr"
+	"waydict/internal/audio"
+	"waydict/internal/config"
+	"waydict/internal/control"
+	"waydict/internal/exitcode"
+	"waydict/internal/inject"
+	"waydict/internal/model"
+	"waydict/internal/swayipc"
 )
 
 func TestRunUsage(t *testing.T) {

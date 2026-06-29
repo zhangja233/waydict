@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 type CheckOptions struct {

@@ -11,23 +11,23 @@ const (
 
 func DefaultPath() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "sway-voice", "config.toml")
+		return filepath.Join(dir, "waydict", "config.toml")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "sway-voice", "config.toml")
+	return filepath.Join(home, ".config", "waydict", "config.toml")
 }
 
 func Defaults() Config {
 	home, _ := os.UserHomeDir()
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
-		runtimeDir = filepath.Join(os.TempDir(), "sway-voice-"+userName())
+		runtimeDir = filepath.Join(os.TempDir(), "waydict-"+userName())
 	}
-	modelRoot := filepath.Join(home, ".local", "share", "sway-voice", "models")
-	stateRoot := filepath.Join(home, ".local", "state", "sway-voice")
+	modelRoot := filepath.Join(home, ".local", "share", "waydict", "models")
+	stateRoot := filepath.Join(home, ".local", "state", "waydict")
 	return Config{
 		Daemon: Daemon{
-			Socket:                      filepath.Join(runtimeDir, "sway-voice", "sway-voice.sock"),
+			Socket:                      filepath.Join(runtimeDir, "waydict", "waydict.sock"),
 			PreloadModel:                true,
 			AutoStopAfterSilenceSeconds: 120,
 			RedactTranscriptsInLogs:     true,

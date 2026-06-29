@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/inject"
+	"waydict/internal/asr"
+	"waydict/internal/inject"
 )
 
 type FakeEngine struct {

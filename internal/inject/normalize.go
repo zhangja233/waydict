@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"sway-voice/internal/config"
+	"waydict/internal/config"
 )
 
 var spaces = regexp.MustCompile(`[ \t\f\v]+`)

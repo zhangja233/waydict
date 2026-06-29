@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sway-voice/internal/model"
+	"waydict/internal/model"
 )
 
 func TestUnpackTarWritesRegularFiles(t *testing.T) {

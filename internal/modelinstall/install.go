@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sway-voice/internal/model"
+	"waydict/internal/model"
 )
 
 type InstallOptions struct {
@@ -28,7 +28,7 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 		if err != nil {
 			return "", err
 		}
-		base = filepath.Join(home, ".local", "share", "sway-voice", "models")
+		base = filepath.Join(home, ".local", "share", "waydict", "models")
 	}
 	url := opts.URL
 	if url == "" {
@@ -223,7 +223,7 @@ const metadataModelCard = `# Parakeet-TDT-0.6B-v3 INT8
 
 These files are the sherpa-onnx INT8 conversion of NVIDIA parakeet-tdt-0.6b-v3 for local CPU speech recognition.
 
-Runtime assumptions used by sway-voice:
+Runtime assumptions used by waydict:
 
 - 16 kHz mono audio input.
 - sherpa-onnx transducer model type: nemo_transducer.

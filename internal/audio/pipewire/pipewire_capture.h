@@ -1,7 +1,7 @@
 //go:build pipewire && cgo && linux
 
-#ifndef SWAY_VOICE_PIPEWIRE_CAPTURE_H
-#define SWAY_VOICE_PIPEWIRE_CAPTURE_H
+#ifndef WAYDICT_PIPEWIRE_CAPTURE_H
+#define WAYDICT_PIPEWIRE_CAPTURE_H
 
 #include <stdint.h>
 

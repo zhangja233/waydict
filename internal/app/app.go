@@ -11,14 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"sway-voice/internal/asr"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/config"
-	"sway-voice/internal/control"
-	"sway-voice/internal/inject"
-	"sway-voice/internal/swayipc"
-	"sway-voice/internal/vad"
-	"sway-voice/pkg/api"
+	"waydict/internal/asr"
+	"waydict/internal/audio"
+	"waydict/internal/config"
+	"waydict/internal/control"
+	"waydict/internal/inject"
+	"waydict/internal/swayipc"
+	"waydict/internal/vad"
+	"waydict/pkg/api"
 )
 
 type Dependencies struct {

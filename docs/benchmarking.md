@@ -3,7 +3,7 @@
 Run file transcription benchmarks without Sway or PipeWire:
 
 ```sh
-sway-voice bench --file sample.wav --repeat 3
+waydict bench --file sample.wav --repeat 3
 ```
 
 The command prints JSON:
@@ -26,5 +26,5 @@ Use the same audio file while changing `[asr].num_threads` in the config. Keep `
 For the optional model test target, provide a real speech file:
 
 ```sh
-SWAY_VOICE_TEST_WAV=/path/to/sample.wav make test-model
+WAYDICT_TEST_WAV=/path/to/sample.wav make test-model
 ```

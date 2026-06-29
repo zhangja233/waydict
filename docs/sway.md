@@ -1,21 +1,21 @@
 # Sway Integration
 
-`sway-voice` does not edit your Sway config automatically. Add bindings manually and reload Sway.
+`waydict` does not edit your Sway config automatically. Add bindings manually and reload Sway.
 
 Toggle mode:
 
 ```sway
-exec_always sway-voice daemon
-bindsym --release --no-repeat $mod+v exec sway-voice toggle
-bindsym --release --no-repeat $mod+Shift+v exec sway-voice stop --discard
+exec_always waydict daemon
+bindsym --release --no-repeat $mod+v exec waydict toggle
+bindsym --release --no-repeat $mod+Shift+v exec waydict stop --discard
 ```
 
 Hold-to-talk mode:
 
 ```sway
-exec_always sway-voice daemon
-bindsym --no-repeat $mod+v exec sway-voice start --mode hold
-bindsym --release --no-repeat $mod+v exec sway-voice stop --commit
+exec_always waydict daemon
+bindsym --no-repeat $mod+v exec waydict start --mode hold
+bindsym --release --no-repeat $mod+v exec waydict stop --commit
 ```
 
 Use `--release` for toggle mode so modifier release does not race with injected text. Use `--no-repeat` so a held key does not send repeated starts. Do not use `--locked`.

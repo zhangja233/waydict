@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"time"
 
-	sherpaasr "sway-voice/internal/asr/sherpa"
-	"sway-voice/internal/audio"
-	"sway-voice/internal/audio/pipewire"
-	"sway-voice/internal/config"
-	"sway-voice/internal/control"
-	"sway-voice/internal/inject"
-	svlog "sway-voice/internal/log"
-	"sway-voice/internal/model"
-	"sway-voice/internal/swayipc"
-	"sway-voice/internal/vad"
+	sherpaasr "waydict/internal/asr/sherpa"
+	"waydict/internal/audio"
+	"waydict/internal/audio/pipewire"
+	"waydict/internal/config"
+	"waydict/internal/control"
+	"waydict/internal/inject"
+	svlog "waydict/internal/log"
+	"waydict/internal/model"
+	"waydict/internal/swayipc"
+	"waydict/internal/vad"
 )
 
 func RunDaemon(ctx context.Context, cfg config.Config) error {
