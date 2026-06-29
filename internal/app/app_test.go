@@ -354,8 +354,76 @@ func TestStopCommitAllowsPendingInjection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ASR worker did not finish")
 	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(mem.Texts) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(mem.Texts) != 1 || mem.Texts[0] != "committed " {
 		t.Fatalf("committed text was not injected: %v", mem.Texts)
+	}
+	if got := app.Status(ctx).State; got != api.StateIdle {
+		t.Fatalf("state = %s, want idle", got)
+	}
+}
+
+func TestStopCommitFlushesOpenSpeechSegment(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.VAD.Engine = "energy"
+	cfg.VAD.Threshold = 0.01
+	cfg.VAD.MinSpeechMS = 20
+	cfg.VAD.MinSilenceMS = 1000
+	cfg.VAD.SpeechPadMS = 0
+	cfg.VAD.PreRollMS = 0
+	cfg.VAD.MaxSpeechSeconds = 3
+	chunk := func(v float32) []float32 {
+		out := make([]float32, 160)
+		for i := range out {
+			out[i] = v
+		}
+		return out
+	}
+	src := &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond}
+	for i := 0; i < 8; i++ {
+		src.Chunks = append(src.Chunks, chunk(0.1))
+	}
+	mem := &MemoryInjector{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    src,
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{Text: "flushed", IsLoaded: true},
+		Injector:  mem,
+	})
+	if err := app.Start(ctx, api.ModeHold); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if app.Status(ctx).State == api.StateSegmentOpen {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := app.Status(ctx).State; got != api.StateSegmentOpen {
+		t.Fatalf("state = %s, want segment_open before commit", got)
+	}
+	if err := app.Stop(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(mem.Texts) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(mem.Texts) != 1 || mem.Texts[0] != "flushed " {
+		t.Fatalf("flushed text was not injected: %v", mem.Texts)
 	}
 	if got := app.Status(ctx).State; got != api.StateIdle {
 		t.Fatalf("state = %s, want idle", got)
