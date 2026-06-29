@@ -532,6 +532,30 @@ func TestQueueSegmentDoesNotBlockWhenASRBackedUp(t *testing.T) {
 	}
 }
 
+func TestASRDeadlineRecordsTimeout(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Engine:   &errorEngine{err: context.DeadlineExceeded},
+		Injector: &MemoryInjector{},
+	})
+	app.queueSegment(asr.AudioSegment{ID: "timeout", Duration: time.Second})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		st := app.Status(ctx)
+		if st.LastError != nil {
+			if st.LastError.Code != "recognition_timeout" {
+				t.Fatalf("error code = %s, want recognition_timeout", st.LastError.Code)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout error was not recorded: %+v", app.Status(ctx).LastError)
+}
+
 func TestDebugSaveAudioSegments(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
@@ -703,6 +727,15 @@ func (g *gateEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.
 		AudioDuration: seg.Duration,
 		Empty:         g.text == "",
 	}, nil
+}
+
+type errorEngine struct {
+	FakeEngine
+	err error
+}
+
+func (e *errorEngine) Transcribe(context.Context, asr.AudioSegment) (asr.Transcript, error) {
+	return asr.Transcript{}, e.err
 }
 
 type overrunSource struct {

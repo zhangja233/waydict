@@ -538,7 +538,7 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 			a.setState(a.nextState())
 			return
 		}
-		a.recordError(a.nextState(), "recognition_failed", err)
+		a.recordError(a.nextState(), recognitionErrorCode(err), err)
 		return
 	}
 	if a.sessionDiscarded(job.session) {
@@ -622,6 +622,13 @@ func safeSegmentFilename(id string) string {
 		return "segment"
 	}
 	return b.String()
+}
+
+func recognitionErrorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "recognition_timeout"
+	}
+	return "recognition_failed"
 }
 
 func (a *App) nextState() api.State {
