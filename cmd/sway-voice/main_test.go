@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -131,6 +132,44 @@ func TestBenchRejectsEmptyAudio(t *testing.T) {
 	}
 }
 
+func TestTranscribeRejectsInvalidASRConfig(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	transcribeFileFunc = func(context.Context, config.Config, string, io.Writer) (asr.Transcript, int) {
+		t.Fatal("transcribe should not run with invalid ASR config")
+		return asr.Transcript{}, exitcode.Success
+	}
+	path := writeConfig(t, `
+[asr]
+engine = "other"
+`)
+	var out, err bytes.Buffer
+	if got := run([]string{"transcribe", "--config", path, "--file", "sample.wav"}, &out, &err); got != exitcode.ModelInvalid {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.ModelInvalid, out.String(), err.String())
+	}
+}
+
+func TestBenchRejectsInvalidASRConfig(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	validateModelForUseFn = func(config.Config) error {
+		t.Fatal("model validation should not run with invalid ASR config")
+		return nil
+	}
+	readAudioFileFunc = func(string) (audio.FileAudio, error) {
+		t.Fatal("audio file should not be read with invalid ASR config")
+		return audio.FileAudio{}, nil
+	}
+	path := writeConfig(t, `
+[asr]
+provider = "cuda"
+`)
+	var out, err bytes.Buffer
+	if got := run([]string{"bench", "--config", path, "--file", "sample.wav"}, &out, &err); got != exitcode.ModelInvalid {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.ModelInvalid, out.String(), err.String())
+	}
+}
+
 func TestBenchUsesInputDurationWhenTranscriptOmitsIt(t *testing.T) {
 	restore := replaceTranscribeDeps(t)
 	defer restore()
@@ -171,6 +210,15 @@ func TestModelCheckMissingDirectory(t *testing.T) {
 	if out.Len() == 0 {
 		t.Fatal("expected diagnostic output")
 	}
+}
+
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func replaceTranscribeDeps(t *testing.T) func() {

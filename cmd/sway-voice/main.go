@@ -186,6 +186,10 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
+	if err := cfg.ValidateASR(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.ModelInvalid
+	}
 	var prepared *preparedInjection
 	if *injectText {
 		var err error
@@ -367,6 +371,10 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
+	}
+	if err := cfg.ValidateASR(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.ModelInvalid
 	}
 	if err := validateModelForUseFn(cfg); err != nil {
 		fmt.Fprintln(stderr, err)

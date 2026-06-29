@@ -211,40 +211,8 @@ func (c Config) Validate() error {
 	if c.Audio.QuantumMS <= 0 {
 		return fmt.Errorf("audio.quantum_ms must be positive")
 	}
-	if c.ASR.Provider != "cpu" {
-		return fmt.Errorf("asr.provider must equal cpu")
-	}
-	if c.ASR.Engine != "sherpa-onnx" {
-		return fmt.Errorf("asr.engine must equal sherpa-onnx")
-	}
-	if c.ASR.ModelType != "nemo_transducer" {
-		return fmt.Errorf("asr.model_type must equal nemo_transducer")
-	}
-	if c.ASR.DecodingMethod != "greedy_search" {
-		return fmt.Errorf("asr.decoding_method must equal greedy_search")
-	}
-	if strings.TrimSpace(c.ASR.ModelDir) == "" {
-		return fmt.Errorf("asr.model_dir must not be empty")
-	}
-	modelFiles := []struct {
-		name  string
-		value string
-	}{
-		{name: "asr.encoder", value: c.ASR.Encoder},
-		{name: "asr.decoder", value: c.ASR.Decoder},
-		{name: "asr.joiner", value: c.ASR.Joiner},
-		{name: "asr.tokens", value: c.ASR.Tokens},
-	}
-	for _, file := range modelFiles {
-		if err := validateModelFile(file.name, file.value); err != nil {
-			return err
-		}
-	}
-	if c.ASR.MaxActivePaths < 1 {
-		return fmt.Errorf("asr.max_active_paths must be positive")
-	}
-	if math.IsNaN(float64(c.ASR.BlankPenalty)) || math.IsInf(float64(c.ASR.BlankPenalty), 0) {
-		return fmt.Errorf("asr.blank_penalty must be finite")
+	if err := c.ValidateASR(); err != nil {
+		return err
 	}
 	if c.Injection.Engine != "wtype" {
 		return fmt.Errorf("injection.engine must equal wtype")
@@ -257,9 +225,6 @@ func (c Config) Validate() error {
 	}
 	if c.Daemon.AutoStopAfterSilenceSeconds < 0 {
 		return fmt.Errorf("daemon.auto_stop_after_silence_seconds must not be negative")
-	}
-	if c.ASR.NumThreads < 1 || c.ASR.NumThreads > runtime.NumCPU() {
-		return fmt.Errorf("asr.num_threads must be between 1 and %d", runtime.NumCPU())
 	}
 	if c.VAD.Engine != "silero" && c.VAD.Engine != "energy" {
 		return fmt.Errorf("vad.engine must be silero or energy")
@@ -315,6 +280,48 @@ func (c Config) Validate() error {
 	}
 	if c.Debug.SaveAudioSegments && strings.TrimSpace(c.Debug.SaveAudioDir) == "" {
 		return fmt.Errorf("debug.save_audio_dir must not be empty when debug.save_audio_segments is true")
+	}
+	return nil
+}
+
+func (c Config) ValidateASR() error {
+	if c.ASR.Provider != "cpu" {
+		return fmt.Errorf("asr.provider must equal cpu")
+	}
+	if c.ASR.Engine != "sherpa-onnx" {
+		return fmt.Errorf("asr.engine must equal sherpa-onnx")
+	}
+	if c.ASR.ModelType != "nemo_transducer" {
+		return fmt.Errorf("asr.model_type must equal nemo_transducer")
+	}
+	if c.ASR.DecodingMethod != "greedy_search" {
+		return fmt.Errorf("asr.decoding_method must equal greedy_search")
+	}
+	if strings.TrimSpace(c.ASR.ModelDir) == "" {
+		return fmt.Errorf("asr.model_dir must not be empty")
+	}
+	modelFiles := []struct {
+		name  string
+		value string
+	}{
+		{name: "asr.encoder", value: c.ASR.Encoder},
+		{name: "asr.decoder", value: c.ASR.Decoder},
+		{name: "asr.joiner", value: c.ASR.Joiner},
+		{name: "asr.tokens", value: c.ASR.Tokens},
+	}
+	for _, file := range modelFiles {
+		if err := validateModelFile(file.name, file.value); err != nil {
+			return err
+		}
+	}
+	if c.ASR.MaxActivePaths < 1 {
+		return fmt.Errorf("asr.max_active_paths must be positive")
+	}
+	if math.IsNaN(float64(c.ASR.BlankPenalty)) || math.IsInf(float64(c.ASR.BlankPenalty), 0) {
+		return fmt.Errorf("asr.blank_penalty must be finite")
+	}
+	if c.ASR.NumThreads < 1 || c.ASR.NumThreads > runtime.NumCPU() {
+		return fmt.Errorf("asr.num_threads must be between 1 and %d", runtime.NumCPU())
 	}
 	return nil
 }

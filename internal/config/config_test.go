@@ -43,6 +43,20 @@ func TestExpandPathRejectsUnknownVariable(t *testing.T) {
 	}
 }
 
+func TestValidateASRDoesNotRequireDaemonRuntimeSettings(t *testing.T) {
+	cfg := Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.Audio.Backend = "alsa"
+	cfg.Sway.RequireSway = false
+	if err := cfg.ValidateASR(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ASR.Engine = "other"
+	if err := cfg.ValidateASR(); err == nil {
+		t.Fatal("expected ASR validation error")
+	}
+}
+
 func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 	tests := []struct {
 		name string
