@@ -566,6 +566,7 @@ func (a *App) recordTranscript(text string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.status.LastError = nil
+	a.status.LastUninjectedText = ""
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if a.cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastTranscript = ""
@@ -581,6 +582,8 @@ func (a *App) recordCanceledTranscript(text string, err error) {
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if !a.cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastUninjectedText = text
+	} else {
+		a.status.LastUninjectedText = ""
 	}
 }
 
@@ -591,6 +594,8 @@ func (a *App) recordUninjected(text string, err error) {
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if !a.cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastUninjectedText = text
+	} else {
+		a.status.LastUninjectedText = ""
 	}
 }
 
