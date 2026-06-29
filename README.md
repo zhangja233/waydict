@@ -92,3 +92,5 @@ sway-voice status --json
 ```
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) for focused checks for missing text, wrong focus, microphone issues, latency, memory use, missing model files, missing `wtype`, missing `SWAYSOCK`, and PipeWire session problems.
+
+For production acceptance on a real Sway/PipeWire system, follow [docs/manual-testing.md](docs/manual-testing.md).
