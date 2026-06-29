@@ -25,6 +25,11 @@ func TestSileroVerifyWAV(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", wavPath, err)
 	}
+	// The silero model is fixed at 16 kHz (the daemon always captures at 16 kHz);
+	// feeding any other rate makes sherpa abort the process, so skip instead.
+	if clip.SampleRate != 16000 {
+		t.Skipf("clip is %d Hz; silero VAD requires 16000 Hz", clip.SampleRate)
+	}
 	cfg := config.Defaults().VAD
 	cfg.Engine = "silero"
 	if m := os.Getenv("WAYDICT_VERIFY_MODEL"); m != "" {
