@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,6 +49,14 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 		edit func(*Config)
 	}{
 		{
+			name: "daemon socket",
+			edit: func(c *Config) { c.Daemon.Socket = "" },
+		},
+		{
+			name: "daemon log level",
+			edit: func(c *Config) { c.Daemon.LogLevel = "trace" },
+		},
+		{
 			name: "format",
 			edit: func(c *Config) { c.Audio.Format = "s16le" },
 		},
@@ -64,6 +73,10 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 			edit: func(c *Config) { c.VAD.Engine = "unknown" },
 		},
 		{
+			name: "silero model",
+			edit: func(c *Config) { c.VAD.Model = "" },
+		},
+		{
 			name: "vad threshold",
 			edit: func(c *Config) { c.VAD.Threshold = 2 },
 		},
@@ -72,12 +85,55 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 			edit: func(c *Config) { c.VAD.NegativeThreshold = c.VAD.Threshold + 0.1 },
 		},
 		{
+			name: "asr model type",
+			edit: func(c *Config) { c.ASR.ModelType = "ctc" },
+		},
+		{
+			name: "asr decoding method",
+			edit: func(c *Config) { c.ASR.DecodingMethod = "modified_beam_search" },
+		},
+		{
+			name: "asr model dir",
+			edit: func(c *Config) { c.ASR.ModelDir = "" },
+		},
+		{
+			name: "asr empty model file",
+			edit: func(c *Config) { c.ASR.Encoder = "" },
+		},
+		{
+			name: "asr absolute model file",
+			edit: func(c *Config) { c.ASR.Decoder = filepath.Join(t.TempDir(), "decoder.int8.onnx") },
+		},
+		{
+			name: "asr parent model file",
+			edit: func(c *Config) { c.ASR.Joiner = "../joiner.int8.onnx" },
+		},
+		{
+			name: "asr max active paths",
+			edit: func(c *Config) { c.ASR.MaxActivePaths = 0 },
+		},
+		{
+			name: "asr blank penalty",
+			edit: func(c *Config) { c.ASR.BlankPenalty = float32(math.NaN()) },
+		},
+		{
 			name: "injection delay",
 			edit: func(c *Config) { c.Injection.KeyDelayMS = -1 },
 		},
 		{
 			name: "injection timeout",
 			edit: func(c *Config) { c.Injection.TimeoutMS = 0 },
+		},
+		{
+			name: "injection wtype path",
+			edit: func(c *Config) { c.Injection.WtypePath = "" },
+		},
+		{
+			name: "debug save audio dir",
+			edit: func(c *Config) {
+				c.Debug.SaveAudioSegments = true
+				c.Debug.SaveAudioDir = ""
+			},
 		},
 	}
 	for _, tc := range tests {

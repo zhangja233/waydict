@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -195,6 +196,12 @@ func (c Config) TokensPath() string {
 }
 
 func (c Config) Validate() error {
+	if strings.TrimSpace(c.Daemon.Socket) == "" {
+		return fmt.Errorf("daemon.socket must not be empty")
+	}
+	if !supportedLogLevel(c.Daemon.LogLevel) {
+		return fmt.Errorf("daemon.log_level must be debug, info, warn, or error")
+	}
 	if c.Audio.Backend != "pipewire" {
 		return fmt.Errorf("audio.backend must equal pipewire")
 	}
@@ -210,8 +217,40 @@ func (c Config) Validate() error {
 	if c.ASR.Engine != "sherpa-onnx" {
 		return fmt.Errorf("asr.engine must equal sherpa-onnx")
 	}
+	if c.ASR.ModelType != "nemo_transducer" {
+		return fmt.Errorf("asr.model_type must equal nemo_transducer")
+	}
+	if c.ASR.DecodingMethod != "greedy_search" {
+		return fmt.Errorf("asr.decoding_method must equal greedy_search")
+	}
+	if strings.TrimSpace(c.ASR.ModelDir) == "" {
+		return fmt.Errorf("asr.model_dir must not be empty")
+	}
+	modelFiles := []struct {
+		name  string
+		value string
+	}{
+		{name: "asr.encoder", value: c.ASR.Encoder},
+		{name: "asr.decoder", value: c.ASR.Decoder},
+		{name: "asr.joiner", value: c.ASR.Joiner},
+		{name: "asr.tokens", value: c.ASR.Tokens},
+	}
+	for _, file := range modelFiles {
+		if err := validateModelFile(file.name, file.value); err != nil {
+			return err
+		}
+	}
+	if c.ASR.MaxActivePaths < 1 {
+		return fmt.Errorf("asr.max_active_paths must be positive")
+	}
+	if math.IsNaN(float64(c.ASR.BlankPenalty)) || math.IsInf(float64(c.ASR.BlankPenalty), 0) {
+		return fmt.Errorf("asr.blank_penalty must be finite")
+	}
 	if c.Injection.Engine != "wtype" {
 		return fmt.Errorf("injection.engine must equal wtype")
+	}
+	if strings.TrimSpace(c.Injection.WtypePath) == "" {
+		return fmt.Errorf("injection.wtype_path must not be empty")
 	}
 	if !c.Sway.RequireSway {
 		return fmt.Errorf("sway.require_sway must be true")
@@ -224,6 +263,9 @@ func (c Config) Validate() error {
 	}
 	if c.VAD.Engine != "silero" && c.VAD.Engine != "energy" {
 		return fmt.Errorf("vad.engine must be silero or energy")
+	}
+	if c.VAD.Engine == "silero" && strings.TrimSpace(c.VAD.Model) == "" {
+		return fmt.Errorf("vad.model must not be empty when vad.engine is silero")
 	}
 	if c.VAD.WindowSize <= 0 {
 		return fmt.Errorf("vad.window_size must be positive")
@@ -270,6 +312,32 @@ func (c Config) Validate() error {
 	}
 	if c.Injection.FocusPolicy != "cancel_on_focus_change" && c.Injection.FocusPolicy != "warn_and_type" && c.Injection.FocusPolicy != "type_current" {
 		return fmt.Errorf("unsupported injection.focus_policy %q", c.Injection.FocusPolicy)
+	}
+	if c.Debug.SaveAudioSegments && strings.TrimSpace(c.Debug.SaveAudioDir) == "" {
+		return fmt.Errorf("debug.save_audio_dir must not be empty when debug.save_audio_segments is true")
+	}
+	return nil
+}
+
+func supportedLogLevel(level string) bool {
+	switch level {
+	case "debug", "info", "warn", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateModelFile(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s must not be empty", name)
+	}
+	if filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be relative to asr.model_dir", name)
+	}
+	clean := filepath.Clean(value)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s must stay within asr.model_dir", name)
 	}
 	return nil
 }
