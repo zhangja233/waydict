@@ -1,0 +1,66 @@
+[daemon]
+socket = "$XDG_RUNTIME_DIR/sway-voice/sway-voice.sock"
+preload_model = true
+auto_stop_after_silence_seconds = 120
+redact_transcripts_in_logs = true
+log_level = "info"
+
+[audio]
+backend = "pipewire"
+sample_rate = 16000
+channels = 1
+format = "f32le"
+quantum_ms = 20
+ring_seconds = 8
+target_object = ""
+start_paused = true
+
+[vad]
+engine = "silero"
+model = "~/.local/share/sway-voice/models/silero_vad.onnx"
+window_size = 512
+threshold = 0.35
+negative_threshold = 0.15
+min_speech_ms = 200
+min_silence_ms = 500
+speech_pad_ms = 300
+pre_roll_ms = 400
+max_speech_seconds = 20
+
+[asr]
+engine = "sherpa-onnx"
+provider = "cpu"
+model_type = "nemo_transducer"
+decoding_method = "greedy_search"
+num_threads = 4
+max_active_paths = 4
+blank_penalty = 0.0
+model_dir = "~/.local/share/sway-voice/models/parakeet-tdt-0.6b-v3-int8"
+encoder = "encoder.int8.onnx"
+decoder = "decoder.int8.onnx"
+joiner = "joiner.int8.onnx"
+tokens = "tokens.txt"
+
+[injection]
+engine = "wtype"
+wtype_path = "wtype"
+key_delay_ms = 1
+timeout_ms = 10000
+append_space = true
+focus_policy = "cancel_on_focus_change"
+
+[postprocess]
+trim_leading = true
+collapse_spaces = true
+fix_punctuation_spacing = true
+spoken_formatting_commands = false
+
+[sway]
+require_sway = true
+socket = "$SWAYSOCK"
+focus_check = true
+
+[debug]
+save_audio_segments = false
+save_audio_dir = "~/.local/state/sway-voice/segments"
+log_transcripts = false

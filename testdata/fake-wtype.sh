@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+: "${SWAY_VOICE_FAKE_WTYPE_OUT:?set SWAY_VOICE_FAKE_WTYPE_OUT}"
+cat > "$SWAY_VOICE_FAKE_WTYPE_OUT"
