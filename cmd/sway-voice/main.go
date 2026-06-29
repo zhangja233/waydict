@@ -100,7 +100,7 @@ func runDaemon(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := app.RunDaemon(ctx, cfg); err != nil {
+	if err := app.RunDaemonWithOptions(ctx, cfg, app.DaemonOptions{ConfigPath: *configPath, LogLevelOverride: *logLevel}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitForErr(err)
 	}

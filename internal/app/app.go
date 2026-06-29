@@ -21,27 +21,29 @@ import (
 )
 
 type Dependencies struct {
-	Source        audio.Source
-	SourceFactory func() (audio.Source, error)
-	ModelChecker  func() error
-	Segmenter     vad.Segmenter
-	Engine        asr.Engine
-	Injector      inject.Injector
-	Focus         *swayipc.Client
-	Shutdown      func()
+	Source         audio.Source
+	SourceFactory  func() (audio.Source, error)
+	ModelChecker   func() error
+	ConfigReloader func(context.Context) (config.Config, error)
+	Segmenter      vad.Segmenter
+	Engine         asr.Engine
+	Injector       inject.Injector
+	Focus          *swayipc.Client
+	Shutdown       func()
 }
 
 type App struct {
-	cfg           config.Config
-	source        audio.Source
-	sourceFactory func() (audio.Source, error)
-	modelChecker  func() error
-	segmenter     vad.Segmenter
-	engine        asr.Engine
-	injector      inject.Injector
-	guard         *swayipc.Guard
-	focus         *swayipc.Client
-	post          inject.PostProcessor
+	cfg            config.Config
+	source         audio.Source
+	sourceFactory  func() (audio.Source, error)
+	modelChecker   func() error
+	configReloader func(context.Context) (config.Config, error)
+	segmenter      vad.Segmenter
+	engine         asr.Engine
+	injector       inject.Injector
+	guard          *swayipc.Guard
+	focus          *swayipc.Client
+	post           inject.PostProcessor
 
 	mu             sync.Mutex
 	status         api.Status
@@ -66,20 +68,21 @@ type segmentJob struct {
 
 func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 	a := &App{
-		cfg:           cfg,
-		source:        deps.Source,
-		sourceFactory: deps.SourceFactory,
-		modelChecker:  deps.ModelChecker,
-		segmenter:     deps.Segmenter,
-		engine:        deps.Engine,
-		injector:      deps.Injector,
-		focus:         deps.Focus,
-		post:          inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
-		startedAt:     time.Now(),
-		rootCtx:       ctx,
-		asrQueue:      make(chan segmentJob, 8),
-		shutdown:      deps.Shutdown,
-		discarded:     make(map[uint64]struct{}),
+		cfg:            cfg,
+		source:         deps.Source,
+		sourceFactory:  deps.SourceFactory,
+		modelChecker:   deps.ModelChecker,
+		configReloader: deps.ConfigReloader,
+		segmenter:      deps.Segmenter,
+		engine:         deps.Engine,
+		injector:       deps.Injector,
+		focus:          deps.Focus,
+		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
+		startedAt:      time.Now(),
+		rootCtx:        ctx,
+		asrQueue:       make(chan segmentJob, 8),
+		shutdown:       deps.Shutdown,
+		discarded:      make(map[uint64]struct{}),
 	}
 	if deps.Focus != nil {
 		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
@@ -145,6 +148,10 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 	case "status":
 		return control.OK(req.ID, a.Status(ctx))
 	case "reload_config":
+		if err := a.ReloadConfig(ctx); err != nil {
+			code := codeFor(err)
+			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
+		}
 		return control.OK(req.ID, a.Status(ctx))
 	case "shutdown":
 		_ = a.Stop(ctx, false)
@@ -270,6 +277,75 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 		a.status.Mode = nil
 	}
 	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) ReloadConfig(ctx context.Context) error {
+	if a.configReloader == nil {
+		return withCode("reload_unavailable", fmt.Errorf("config reload is unavailable"))
+	}
+	a.mu.Lock()
+	if a.capturing || a.pendingASR > 0 {
+		a.mu.Unlock()
+		return withCode("busy", fmt.Errorf("cannot reload config while dictation is active"))
+	}
+	a.mu.Unlock()
+
+	cfg, err := a.configReloader(ctx)
+	if err != nil {
+		return withCode("config_invalid", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return withCode("config_invalid", err)
+	}
+
+	a.mu.Lock()
+	if a.capturing || a.pendingASR > 0 {
+		a.mu.Unlock()
+		return withCode("busy", fmt.Errorf("cannot reload config while dictation is active"))
+	}
+	if err := reloadRequiresRestart(a.cfg, cfg); err != nil {
+		a.mu.Unlock()
+		return withCode("restart_required", err)
+	}
+	a.cfg = cfg
+	a.post = inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace)
+	a.status.LastTranscriptRedacted = cfg.Daemon.RedactTranscriptsInLogs
+	if cfg.Daemon.RedactTranscriptsInLogs {
+		a.status.LastTranscript = ""
+		a.status.LastUninjectedText = ""
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+func reloadRequiresRestart(old, next config.Config) error {
+	oldDaemon := old.Daemon
+	nextDaemon := next.Daemon
+	oldDaemon.AutoStopAfterSilenceSeconds = nextDaemon.AutoStopAfterSilenceSeconds
+	oldDaemon.RedactTranscriptsInLogs = nextDaemon.RedactTranscriptsInLogs
+	oldDaemon.LogLevel = nextDaemon.LogLevel
+	if oldDaemon != nextDaemon {
+		return fmt.Errorf("daemon socket or preload changes require restart")
+	}
+	if old.Audio != next.Audio {
+		return fmt.Errorf("audio changes require restart")
+	}
+	if old.VAD != next.VAD {
+		return fmt.Errorf("VAD changes require restart")
+	}
+	if old.ASR != next.ASR {
+		return fmt.Errorf("ASR changes require restart")
+	}
+	oldInjection := old.Injection
+	nextInjection := next.Injection
+	oldInjection.AppendSpace = nextInjection.AppendSpace
+	if oldInjection != nextInjection {
+		return fmt.Errorf("injection engine changes require restart")
+	}
+	if old.Sway != next.Sway {
+		return fmt.Errorf("Sway changes require restart")
+	}
 	return nil
 }
 

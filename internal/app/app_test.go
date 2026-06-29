@@ -215,6 +215,75 @@ func TestStopRejectsCommitDiscardConflict(t *testing.T) {
 	}
 }
 
+func TestReloadConfigAppliesReloadableFields(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	next := cfg
+	next.Daemon.RedactTranscriptsInLogs = false
+	next.Daemon.AutoStopAfterSilenceSeconds = cfg.Daemon.AutoStopAfterSilenceSeconds + 1
+	next.Injection.AppendSpace = false
+	next.Debug.SaveAudioSegments = true
+	next.Debug.SaveAudioDir = t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		ConfigReloader: func(context.Context) (config.Config, error) { return next, nil },
+	})
+	resp := app.HandleControl(ctx, control.NewRequest("reload_config", nil))
+	if !resp.OK {
+		t.Fatalf("reload failed: %+v", resp.Error)
+	}
+	if app.cfg.Daemon.RedactTranscriptsInLogs {
+		t.Fatal("redaction setting was not reloaded")
+	}
+	if app.cfg.Daemon.AutoStopAfterSilenceSeconds != next.Daemon.AutoStopAfterSilenceSeconds {
+		t.Fatal("auto-stop setting was not reloaded")
+	}
+	if got := app.post.Apply("hello"); got != "hello" {
+		t.Fatalf("postprocessor text = %q, want no appended space", got)
+	}
+	if !app.cfg.Debug.SaveAudioSegments || app.cfg.Debug.SaveAudioDir != next.Debug.SaveAudioDir {
+		t.Fatal("debug audio settings were not reloaded")
+	}
+}
+
+func TestReloadConfigRejectsRuntimeChanges(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	next := cfg
+	next.ASR.ModelDir = filepath.Join(t.TempDir(), "other-model")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		ConfigReloader: func(context.Context) (config.Config, error) { return next, nil },
+	})
+	resp := app.HandleControl(ctx, control.NewRequest("reload_config", nil))
+	if resp.OK || resp.Error == nil || resp.Error.Code != "restart_required" {
+		t.Fatalf("response error = %+v, want restart_required", resp.Error)
+	}
+}
+
+func TestReloadConfigRejectsActiveCapture(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:         &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond},
+		Engine:         &FakeEngine{Text: "hello", IsLoaded: true},
+		Injector:       &MemoryInjector{},
+		ConfigReloader: func(context.Context) (config.Config, error) { return cfg, nil },
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	defer app.Stop(ctx, false)
+	resp := app.HandleControl(ctx, control.NewRequest("reload_config", nil))
+	if resp.OK || resp.Error == nil || resp.Error.Code != "busy" {
+		t.Fatalf("response error = %+v, want busy", resp.Error)
+	}
+}
+
 func TestStopDiscardSuppressesPendingInjection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1

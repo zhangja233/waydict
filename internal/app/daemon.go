@@ -17,6 +17,15 @@ import (
 )
 
 func RunDaemon(ctx context.Context, cfg config.Config) error {
+	return RunDaemonWithOptions(ctx, cfg, DaemonOptions{})
+}
+
+type DaemonOptions struct {
+	ConfigPath       string
+	LogLevelOverride string
+}
+
+func RunDaemonWithOptions(ctx context.Context, cfg config.Config, opts DaemonOptions) error {
 	ctx, cancelDaemon := context.WithCancel(ctx)
 	defer cancelDaemon()
 	if err := cfg.Validate(); err != nil {
@@ -53,12 +62,31 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 		SourceFactory: func() (audio.Source, error) {
 			return pipewire.New(cfg.Audio)
 		},
-		ModelChecker: checkModel,
-		Segmenter:    vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
-		Engine:       engine,
-		Injector:     inject.NewWtype(cfg.Injection),
-		Focus:        focus,
-		Shutdown:     cancelDaemon,
+		ModelChecker:   checkModel,
+		ConfigReloader: reloadConfig(opts),
+		Segmenter:      vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:         engine,
+		Injector:       inject.NewWtype(cfg.Injection),
+		Focus:          focus,
+		Shutdown:       cancelDaemon,
 	})
 	return control.NewServer(cfg.Daemon.Socket, application).Serve(ctx)
+}
+
+func reloadConfig(opts DaemonOptions) func(context.Context) (config.Config, error) {
+	return func(ctx context.Context) (config.Config, error) {
+		select {
+		case <-ctx.Done():
+			return config.Config{}, ctx.Err()
+		default:
+		}
+		cfg, err := config.Load(opts.ConfigPath)
+		if err != nil {
+			return config.Config{}, err
+		}
+		if opts.LogLevelOverride != "" {
+			cfg.Daemon.LogLevel = opts.LogLevelOverride
+		}
+		return cfg, nil
+	}
 }
