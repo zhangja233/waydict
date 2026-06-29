@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sway-voice/internal/asr"
 	"sway-voice/internal/audio"
 	"sway-voice/internal/config"
+	"sway-voice/internal/control"
 	"sway-voice/internal/swayipc"
 	"sway-voice/internal/vad"
 	"sway-voice/pkg/api"
@@ -69,6 +71,54 @@ func TestSourceFactoryUsedOnStart(t *testing.T) {
 		t.Fatal("source factory was not called")
 	}
 	_ = app.Stop(ctx, false)
+}
+
+func TestStartReturnsCodedDependencyErrors(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	tests := []struct {
+		name string
+		deps Dependencies
+		want string
+	}{
+		{
+			name: "wtype",
+			deps: Dependencies{
+				Engine:   &FakeEngine{Text: "hello", IsLoaded: true},
+				Injector: &MemoryInjector{Err: errors.New("missing executable")},
+			},
+			want: "wtype_unavailable",
+		},
+		{
+			name: "model",
+			deps: Dependencies{
+				ModelChecker: func() error { return errors.New("missing files") },
+				Engine:       &FakeEngine{Text: "hello"},
+				Injector:     &MemoryInjector{},
+			},
+			want: "model_invalid",
+		},
+		{
+			name: "pipewire",
+			deps: Dependencies{
+				SourceFactory: func() (audio.Source, error) { return nil, errors.New("connect failed") },
+				Engine:        &FakeEngine{Text: "hello", IsLoaded: true},
+				Injector:      &MemoryInjector{},
+			},
+			want: "pipewire_unavailable",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			app := New(ctx, cfg, tc.deps)
+			resp := app.HandleControl(ctx, control.NewRequest("start", map[string]any{}))
+			if resp.OK || resp.Error == nil || resp.Error.Code != tc.want {
+				t.Fatalf("response error = %+v, want %s", resp.Error, tc.want)
+			}
+		})
+	}
 }
 
 func TestAutoStopAfterSilence(t *testing.T) {

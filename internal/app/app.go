@@ -21,6 +21,7 @@ import (
 type Dependencies struct {
 	Source        audio.Source
 	SourceFactory func() (audio.Source, error)
+	ModelChecker  func() error
 	Segmenter     vad.Segmenter
 	Engine        asr.Engine
 	Injector      inject.Injector
@@ -32,6 +33,7 @@ type App struct {
 	cfg           config.Config
 	source        audio.Source
 	sourceFactory func() (audio.Source, error)
+	modelChecker  func() error
 	segmenter     vad.Segmenter
 	engine        asr.Engine
 	injector      inject.Injector
@@ -56,6 +58,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		cfg:           cfg,
 		source:        deps.Source,
 		sourceFactory: deps.SourceFactory,
+		modelChecker:  deps.ModelChecker,
 		segmenter:     deps.Segmenter,
 		engine:        deps.Engine,
 		injector:      deps.Injector,
@@ -103,7 +106,7 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 			return control.Fail(req.ID, "usage", "mode must be toggle, oneshot, or hold", a.Status(ctx))
 		}
 		if err := a.Start(ctx, mode); err != nil {
-			code := classify(err)
+			code := codeFor(err)
 			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
 		}
 		return control.OK(req.ID, a.Status(ctx))
@@ -114,13 +117,13 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 			commit = true
 		}
 		if err := a.Stop(ctx, commit); err != nil {
-			code := classify(err)
+			code := codeFor(err)
 			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
 		}
 		return control.OK(req.ID, a.Status(ctx))
 	case "toggle":
 		if err := a.Toggle(ctx); err != nil {
-			code := classify(err)
+			code := codeFor(err)
 			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
 		}
 		return control.OK(req.ID, a.Status(ctx))
@@ -156,19 +159,25 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	if a.injector != nil {
 		if err := a.injector.Available(ctx); err != nil {
 			a.recordError(api.StateIdle, "wtype_unavailable", err)
-			return err
+			return withCode("wtype_unavailable", err)
 		}
 	}
 	if a.engine != nil && !a.engine.Loaded() {
+		if a.modelChecker != nil {
+			if err := a.modelChecker(); err != nil {
+				a.recordError(api.StateIdle, "model_invalid", err)
+				return withCode("model_invalid", err)
+			}
+		}
 		if err := a.engine.Load(ctx); err != nil {
 			a.recordError(api.StateIdle, "model_invalid", err)
-			return err
+			return withCode("model_invalid", err)
 		}
 	}
 	if a.guard != nil && a.cfg.Sway.FocusCheck {
 		if err := a.guard.CaptureStart(ctx); err != nil {
 			a.recordError(api.StateIdle, "sway_unavailable", err)
-			return err
+			return withCode("sway_unavailable", err)
 		}
 		a.recordFocus(a.guard.StartedFocus())
 	}
@@ -178,7 +187,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	if src == nil {
 		if err := a.recreateSource(ctx); err != nil {
 			a.recordError(api.StateIdle, "pipewire_unavailable", err)
-			return err
+			return withCode("pipewire_unavailable", err)
 		}
 	}
 	a.mu.Lock()
@@ -187,11 +196,11 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	if src == nil {
 		err := audio.ErrUnavailable
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
-		return err
+		return withCode("pipewire_unavailable", err)
 	}
 	if err := src.Start(ctx); err != nil {
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
-		return err
+		return withCode("pipewire_unavailable", err)
 	}
 	sessionCtx, cancel := context.WithCancel(a.rootCtx)
 	a.mu.Lock()
@@ -223,8 +232,8 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	a.mu.Unlock()
 	if src != nil && wasCapturing {
 		if err := src.Pause(ctx); err != nil {
-			a.recordError(api.StateIdle, classify(err), err)
-			return err
+			a.recordError(api.StateIdle, "pipewire_unavailable", err)
+			return withCode("pipewire_unavailable", err)
 		}
 	}
 	if a.segmenter != nil {
@@ -616,6 +625,34 @@ func boolArg(args map[string]any, name string) bool {
 	}
 	v, _ := args[name].(bool)
 	return v
+}
+
+type codedError struct {
+	code string
+	err  error
+}
+
+func (e codedError) Error() string {
+	return e.err.Error()
+}
+
+func (e codedError) Unwrap() error {
+	return e.err
+}
+
+func withCode(code string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return codedError{code: code, err: err}
+}
+
+func codeFor(err error) string {
+	var coded codedError
+	if errors.As(err, &coded) {
+		return coded.code
+	}
+	return classify(err)
 }
 
 func classify(err error) string {

@@ -22,10 +22,16 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if cfg.Daemon.PreloadModel {
+	checkModel := func() error {
 		res := model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
 		if !res.OK {
 			return fmt.Errorf("model validation failed: %v", res.Errors)
+		}
+		return nil
+	}
+	if cfg.Daemon.PreloadModel {
+		if err := checkModel(); err != nil {
+			return err
 		}
 	}
 	focus := swayipc.New(cfg.Sway.Socket)
@@ -47,11 +53,12 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 		SourceFactory: func() (audio.Source, error) {
 			return pipewire.New(cfg.Audio)
 		},
-		Segmenter: vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
-		Engine:    engine,
-		Injector:  inject.NewWtype(cfg.Injection),
-		Focus:     focus,
-		Shutdown:  cancelDaemon,
+		ModelChecker: checkModel,
+		Segmenter:    vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:       engine,
+		Injector:     inject.NewWtype(cfg.Injection),
+		Focus:        focus,
+		Shutdown:     cancelDaemon,
 	})
 	return control.NewServer(cfg.Daemon.Socket, application).Serve(ctx)
 }
