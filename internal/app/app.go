@@ -202,6 +202,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 		return withCode("pipewire_unavailable", err)
 	}
 	if err := src.Start(ctx); err != nil {
+		a.clearSource(src)
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
 		return withCode("pipewire_unavailable", err)
 	}
@@ -464,6 +465,14 @@ func closeSource(src audio.Source) {
 	if closer, ok := src.(interface{ Close() }); ok {
 		closer.Close()
 	}
+}
+
+func (a *App) clearSource(src audio.Source) {
+	a.mu.Lock()
+	a.source = nil
+	a.status.Audio.Capturing = false
+	a.mu.Unlock()
+	closeSource(src)
 }
 
 func (a *App) asrWorker(ctx context.Context) {

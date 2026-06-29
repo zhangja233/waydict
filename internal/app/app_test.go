@@ -73,6 +73,40 @@ func TestSourceFactoryUsedOnStart(t *testing.T) {
 	_ = app.Stop(ctx, false)
 }
 
+func TestSourceFactoryRetriesAfterStartFailure(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failed := &startFailSource{sampleRate: 16000}
+	calls := 0
+	app := New(ctx, cfg, Dependencies{
+		SourceFactory: func() (audio.Source, error) {
+			calls++
+			if calls == 1 {
+				return failed, nil
+			}
+			return &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond}, nil
+		},
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{Text: "hello", IsLoaded: true},
+		Injector:  &MemoryInjector{},
+	})
+	if err := app.Start(ctx, api.ModeToggle); err == nil {
+		t.Fatal("expected first start to fail")
+	}
+	if !failed.closed {
+		t.Fatal("failed source was not closed")
+	}
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("factory calls = %d, want 2", calls)
+	}
+	_ = app.Stop(ctx, false)
+}
+
 func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
@@ -413,6 +447,27 @@ func (s *errorSource) Read(context.Context, []float32) (int, error) {
 
 func (s *errorSource) Stats() audio.Stats {
 	return audio.Stats{SampleRate: s.sampleRate}
+}
+
+type startFailSource struct {
+	sampleRate int
+	closed     bool
+}
+
+func (s *startFailSource) Start(context.Context) error { return audio.ErrUnavailable }
+func (s *startFailSource) Pause(context.Context) error { return nil }
+func (s *startFailSource) Stop(context.Context) error  { return nil }
+
+func (s *startFailSource) Read(context.Context, []float32) (int, error) {
+	return 0, audio.ErrUnavailable
+}
+
+func (s *startFailSource) Stats() audio.Stats {
+	return audio.Stats{SampleRate: s.sampleRate}
+}
+
+func (s *startFailSource) Close() {
+	s.closed = true
 }
 
 type recordingEngine struct {
