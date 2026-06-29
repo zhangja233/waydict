@@ -68,6 +68,45 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	return activateInstall(base, staging)
 }
 
+func InstallSileroVAD(ctx context.Context, opts InstallOptions) (string, error) {
+	base := opts.Dir
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".local", "share", "waydict", "models")
+	}
+	url := opts.URL
+	if url == "" {
+		url = model.SileroVADURL
+	}
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return "", err
+	}
+	tmp, err := os.MkdirTemp(base, ".download-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	staged := filepath.Join(tmp, model.SileroVADFile)
+	if err := download(ctx, url, staged); err != nil {
+		return "", err
+	}
+	st, err := os.Stat(staged)
+	if err != nil {
+		return "", err
+	}
+	if st.Size() < model.MinSileroVADSize {
+		return "", fmt.Errorf("downloaded silero model is implausibly small (%d bytes); check the URL", st.Size())
+	}
+	final := filepath.Join(base, model.SileroVADFile)
+	if err := os.Rename(staged, final); err != nil {
+		return "", err
+	}
+	return final, nil
+}
+
 func activateInstall(base, staging string) (string, error) {
 	final := filepath.Join(base, model.ParakeetV3Int8ID)
 	backup := final + ".old"

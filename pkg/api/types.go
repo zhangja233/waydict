@@ -29,6 +29,7 @@ type Status struct {
 	State                  State           `json:"state"`
 	Mode                   *Mode           `json:"mode"`
 	Audio                  AudioStatus     `json:"audio"`
+	VAD                    VADStatus       `json:"vad"`
 	ASR                    ASRStatus       `json:"asr"`
 	Injection              InjectionStatus `json:"injection"`
 	Focus                  FocusStatus     `json:"focus"`
@@ -46,6 +47,13 @@ type AudioStatus struct {
 	LevelDBFS  float64 `json:"level_dbfs"`
 	Overruns   uint64  `json:"overruns"`
 	Capturing  bool    `json:"capturing"`
+}
+
+// VADStatus reports the voice-activity-detection engine actually in use. It can
+// differ from the configured engine: if vad.engine="silero" but the silero model
+// is missing, the daemon falls back to "energy" — compare with config to detect that.
+type VADStatus struct {
+	Engine string `json:"engine"`
 }
 
 type ASRStatus struct {

@@ -93,6 +93,10 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 	if deps.Focus != nil {
 		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
 	}
+	vadEngine := ""
+	if deps.Segmenter != nil {
+		vadEngine = deps.Segmenter.Name()
+	}
 	a.status = api.Status{
 		State: api.StateIdle,
 		Audio: api.AudioStatus{
@@ -100,6 +104,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 			SampleRate: cfg.Audio.SampleRate,
 			LevelDBFS:  -120,
 		},
+		VAD: api.VADStatus{Engine: vadEngine},
 		ASR: api.ASRStatus{
 			Engine:     cfg.ASR.Engine,
 			Model:      config.DefaultModelName,

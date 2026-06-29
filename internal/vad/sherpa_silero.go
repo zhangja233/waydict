@@ -95,6 +95,8 @@ func (s *SileroSegmenter) MarkCaptureOverrun() {
 	s.degraded = true
 }
 
+func (s *SileroSegmenter) Name() string { return "silero" }
+
 func (s *SileroSegmenter) collect(degraded bool) []asr.AudioSegment {
 	var out []asr.AudioSegment
 	for !s.vad.IsEmpty() {

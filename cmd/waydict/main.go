@@ -76,7 +76,7 @@ func usage(w io.Writer) {
   waydict status [--json]
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
-  waydict model install parakeet-v3-int8 [--dir PATH]
+  waydict model install <parakeet-v3-int8|silero-vad|all> [--dir PATH]
   waydict bench --file PATH [--repeat N]
   waydict doctor`)
 }
@@ -313,6 +313,7 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 			return exitcode.Usage
 		}
 		var res model.CheckResult
+		var vad *model.VADCheckResult
 		if *dir != "" {
 			res = model.CheckDir(*dir, model.CheckOptions{StrictSizes: true})
 		} else {
@@ -322,19 +323,37 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 				return exitcode.Generic
 			}
 			res = model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
+			v := model.CheckVADConfig(cfg)
+			vad = &v
 		}
 		if *jsonOut {
-			printJSON(stdout, res)
+			if vad != nil {
+				printJSON(stdout, struct {
+					model.CheckResult
+					VAD model.VADCheckResult `json:"vad"`
+				}{res, *vad})
+			} else {
+				printJSON(stdout, res)
+			}
 		} else {
 			printModelCheck(stdout, res)
+			if vad != nil {
+				printVADCheck(stdout, *vad)
+			}
 		}
 		if !res.OK {
 			return exitcode.ModelInvalid
 		}
 		return exitcode.Success
 	case "install":
-		if len(args) < 2 || args[1] != "parakeet-v3-int8" {
-			fmt.Fprintln(stderr, "usage: waydict model install parakeet-v3-int8 [--dir PATH]")
+		const installUsage = "usage: waydict model install <parakeet-v3-int8|silero-vad|all> [--dir PATH]"
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, installUsage)
+			return exitcode.Usage
+		}
+		name := args[1]
+		if name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" {
+			fmt.Fprintln(stderr, installUsage)
 			return exitcode.Usage
 		}
 		fs := flag.NewFlagSet("model install", flag.ContinueOnError)
@@ -344,12 +363,34 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 			return exitcode.Usage
 		}
 		ctx := context.Background()
-		path, err := modelinstall.InstallParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
-		if err != nil {
-			fmt.Fprintln(stderr, err)
+		install := func(kind string) bool {
+			var (
+				path string
+				err  error
+			)
+			switch kind {
+			case "parakeet-v3-int8":
+				path, err = modelinstall.InstallParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
+			case "silero-vad":
+				path, err = modelinstall.InstallSileroVAD(ctx, modelinstall.InstallOptions{Dir: *dir})
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", kind, err)
+				return false
+			}
+			fmt.Fprintln(stdout, path)
+			return true
+		}
+		ok := true
+		if name == "all" {
+			ok = install("parakeet-v3-int8") && ok
+			ok = install("silero-vad") && ok
+		} else {
+			ok = install(name)
+		}
+		if !ok {
 			return exitcode.Generic
 		}
-		fmt.Fprintln(stdout, path)
 		return exitcode.Success
 	default:
 		fmt.Fprintf(stderr, "unknown model subcommand %q\n", args[0])
@@ -478,6 +519,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if !printDoctorModel(stdout, res) {
 		failures++
 	}
+	printDoctorVAD(stdout, model.CheckVADConfig(cfg))
 	fmt.Fprintf(stdout, "INFO %-18s %s/%s cgo=%s goroutines=%d\n", "go", runtime.GOOS, runtime.GOARCH, os.Getenv("CGO_ENABLED"), runtime.NumGoroutine())
 	if failures > 0 {
 		return exitcode.DependencyMissing
@@ -497,12 +539,23 @@ func printDoctorModel(w io.Writer, res model.CheckResult) bool {
 	return res.OK
 }
 
+func printDoctorVAD(w io.Writer, res model.VADCheckResult) {
+	switch {
+	case res.Warning != "":
+		fmt.Fprintf(w, "WARN %-18s %s\n", "vad model", res.Warning)
+	case res.Engine == "silero":
+		fmt.Fprintf(w, "OK   %-18s engine=silero %s\n", "vad model", res.Model)
+	default:
+		fmt.Fprintf(w, "OK   %-18s engine=%s (no model needed)\n", "vad model", res.Engine)
+	}
+}
+
 func printStatus(w io.Writer, st api.Status) {
 	mode := "null"
 	if st.Mode != nil {
 		mode = string(*st.Mode)
 	}
-	fmt.Fprintf(w, "state=%s mode=%s model_loaded=%t audio=%s capturing=%t overruns=%d\n", st.State, mode, st.ASR.Loaded, st.Audio.Backend, st.Audio.Capturing, st.Audio.Overruns)
+	fmt.Fprintf(w, "state=%s mode=%s model_loaded=%t vad=%s audio=%s capturing=%t overruns=%d\n", st.State, mode, st.ASR.Loaded, st.VAD.Engine, st.Audio.Backend, st.Audio.Capturing, st.Audio.Overruns)
 	if st.LastError != nil {
 		fmt.Fprintf(w, "last_error=%s: %s\n", st.LastError.Code, st.LastError.Message)
 	}
@@ -531,6 +584,17 @@ func printModelCheck(w io.Writer, res model.CheckResult) {
 	}
 	for _, warning := range res.Warnings {
 		fmt.Fprintf(w, "WARN %s\n", warning)
+	}
+}
+
+func printVADCheck(w io.Writer, res model.VADCheckResult) {
+	switch {
+	case res.Warning != "":
+		fmt.Fprintf(w, "WARN vad %s\n", res.Warning)
+	case res.Engine == "silero":
+		fmt.Fprintf(w, "OK   vad %s\n", res.Model)
+	default:
+		fmt.Fprintf(w, "OK   vad engine=%s (no model needed)\n", res.Engine)
 	}
 }
 

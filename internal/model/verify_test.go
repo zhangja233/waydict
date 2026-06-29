@@ -134,6 +134,44 @@ func TestCheckConfigRejectsMissingConfiguredModelFile(t *testing.T) {
 	}
 }
 
+func TestCheckVADConfigSileroMissingWarnsButOK(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.VAD.Engine = "silero"
+	cfg.VAD.Model = filepath.Join(t.TempDir(), "absent.onnx")
+	res := CheckVADConfig(cfg)
+	if !res.OK {
+		t.Fatalf("missing silero model must not be fatal: %+v", res)
+	}
+	if res.Warning == "" {
+		t.Fatal("expected a warning for the missing silero model")
+	}
+}
+
+func TestCheckVADConfigSileroPresent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "silero_vad.onnx")
+	if err := os.WriteFile(path, []byte("model"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.VAD.Engine = "silero"
+	cfg.VAD.Model = path
+	res := CheckVADConfig(cfg)
+	if !res.OK || res.Warning != "" {
+		t.Fatalf("present silero model: ok=%t warning=%q", res.OK, res.Warning)
+	}
+}
+
+func TestCheckVADConfigEnergyNeedsNoModel(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.VAD.Engine = "energy"
+	cfg.VAD.Model = filepath.Join(t.TempDir(), "absent.onnx")
+	res := CheckVADConfig(cfg)
+	if !res.OK || res.Warning != "" {
+		t.Fatalf("energy engine: ok=%t warning=%q", res.OK, res.Warning)
+	}
+}
+
 func writeTinyModel(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

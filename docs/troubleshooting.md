@@ -22,14 +22,26 @@ The Parakeet v3 INT8 model is large. The target loaded RSS is under roughly 2.5 
 
 ## Missing Model Files
 
-Run:
+`waydict doctor` reports which models are missing. To (re)install both:
 
 ```sh
-waydict model install parakeet-v3-int8
+waydict model install all   # or individually: parakeet-v3-int8 / silero-vad
 waydict model check
 ```
 
+A missing **ASR** model is fatal — the daemon exits on startup. A missing **silero VAD** model is not: the daemon keeps running but degrades to the energy VAD (see next section).
+
 If using a manual model download, point `[asr].model_dir` at the directory containing `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt`.
+
+## Speech Cut Off or Not Detected (silero VAD missing)
+
+The default config uses the silero VAD (`[vad] engine = "silero"`). If `silero_vad.onnx` is missing, the daemon silently falls back to the energy VAD, and the silero-scaled `[vad] threshold`/`negative_threshold` (0..1 probabilities) are then read as linear RMS — so segmentation misbehaves while the daemon otherwise looks healthy. `waydict doctor` flags this as a `WARN vad model` line. Fix:
+
+```sh
+waydict model install silero-vad
+```
+
+Then restart the daemon. To run on the energy VAD deliberately, set `[vad] engine = "energy"` and tune `threshold`/`negative_threshold` as linear RMS levels.
 
 ## `wtype` Unavailable
 

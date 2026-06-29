@@ -7,6 +7,12 @@ const (
 	SherpaParakeetV3Int8 = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 	ParakeetV3ArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
 	DefaultChecksumFile  = "checksums.sha256"
+
+	SileroVADFile = "silero_vad.onnx"
+	SileroVADURL  = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+	// MinSileroVADSize guards against truncated or HTML-error downloads; the real
+	// asset is ~600 KiB and there is no published checksum to verify against.
+	MinSileroVADSize = 64 * 1024
 )
 
 type RequiredFile struct {

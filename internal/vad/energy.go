@@ -113,6 +113,8 @@ func (s *EnergySegmenter) MarkCaptureOverrun() {
 	s.captureOverrun = true
 }
 
+func (s *EnergySegmenter) Name() string { return "energy" }
+
 func (s *EnergySegmenter) updatePreRoll(samples []float32) {
 	if s.preRollCap <= 0 {
 		return

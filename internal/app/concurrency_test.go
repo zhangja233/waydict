@@ -48,6 +48,8 @@ func (s *raceCheckSegmenter) Flush(_ bool, _ time.Time) []asr.AudioSegment {
 
 func (s *raceCheckSegmenter) Reset() { s.enter(); s.leave() }
 
+func (s *raceCheckSegmenter) Name() string { return "fake" }
+
 // continuousSource always returns audio while capturing, so captureLoop keeps
 // calling the segmenter and any cross-session overlap is exercised.
 type continuousSource struct{ capturing atomic.Bool }

@@ -223,3 +223,26 @@ func fileSHA256(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// VADCheckResult reports whether the configured VAD engine has the model it needs.
+type VADCheckResult struct {
+	Engine  string `json:"engine"`
+	Model   string `json:"model,omitempty"`
+	OK      bool   `json:"ok"`
+	Warning string `json:"warning,omitempty"`
+}
+
+// CheckVADConfig verifies the model for the configured VAD engine. A missing silero
+// model is not fatal — the daemon falls back to the energy engine — so it reports a
+// warning with OK still true, rather than an error.
+func CheckVADConfig(cfg config.Config) VADCheckResult {
+	res := VADCheckResult{Engine: cfg.VAD.Engine, OK: true}
+	if cfg.VAD.Engine != "silero" {
+		return res
+	}
+	res.Model = cfg.VAD.Model
+	if _, err := os.Stat(cfg.VAD.Model); err != nil {
+		res.Warning = fmt.Sprintf("silero model missing at %s: the daemon falls back to the energy engine, where vad.threshold/negative_threshold are read as linear RMS instead of 0..1 probabilities — run 'waydict model install silero-vad'", cfg.VAD.Model)
+	}
+	return res
+}

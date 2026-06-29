@@ -275,6 +275,37 @@ func TestPrintDoctorModelFailure(t *testing.T) {
 	}
 }
 
+func TestPrintDoctorVADWarnsWhenSileroModelMissing(t *testing.T) {
+	var out bytes.Buffer
+	printDoctorVAD(&out, model.VADCheckResult{Engine: "silero", Model: "/x/silero_vad.onnx", OK: true, Warning: "silero model missing"})
+	if got := out.String(); !strings.HasPrefix(got, "WARN vad model") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestPrintDoctorVADOKForEnergyEngine(t *testing.T) {
+	var out bytes.Buffer
+	printDoctorVAD(&out, model.VADCheckResult{Engine: "energy", OK: true})
+	got := out.String()
+	if !strings.HasPrefix(got, "OK   vad model") || !strings.Contains(got, "no model needed") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestModelInstallRejectsUnknownName(t *testing.T) {
+	var out, err bytes.Buffer
+	if got := run([]string{"model", "install", "bogus"}, &out, &err); got != exitcode.Usage {
+		t.Fatalf("exit = %d, want %d; stderr=%s", got, exitcode.Usage, err.String())
+	}
+}
+
+func TestModelInstallRequiresName(t *testing.T) {
+	var out, err bytes.Buffer
+	if got := run([]string{"model", "install"}, &out, &err); got != exitcode.Usage {
+		t.Fatalf("exit = %d, want %d; stderr=%s", got, exitcode.Usage, err.String())
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")

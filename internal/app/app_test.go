@@ -50,6 +50,22 @@ func TestStateTransitionsStartStop(t *testing.T) {
 	}
 }
 
+func TestStatusReportsVADEngine(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond},
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{},
+		Injector:  &MemoryInjector{},
+	})
+	if got := app.Status(ctx).VAD.Engine; got != "energy" {
+		t.Fatalf("vad engine = %q, want energy", got)
+	}
+}
+
 func TestStatusReportsSegmentOpen(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
@@ -911,6 +927,8 @@ func (s *resetTrackingSegmenter) Reset() {
 	default:
 	}
 }
+
+func (s *resetTrackingSegmenter) Name() string { return "fake" }
 
 type errorSource struct {
 	sampleRate int

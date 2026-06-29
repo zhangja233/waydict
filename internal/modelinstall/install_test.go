@@ -3,12 +3,60 @@ package modelinstall
 import (
 	"archive/tar"
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"waydict/internal/model"
 )
+
+func TestInstallSileroVADWritesModel(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), model.MinSileroVADSize+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	base := t.TempDir()
+	path, err := InstallSileroVAD(context.Background(), InstallOptions{Dir: base, URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(base, model.SileroVADFile)
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	got, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(body) {
+		t.Fatalf("size = %d, want %d", len(got), len(body))
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != model.SileroVADFile {
+		t.Fatalf("base dir not clean after install: %v", entries)
+	}
+}
+
+func TestInstallSileroVADRejectsTinyDownload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("nope"))
+	}))
+	defer srv.Close()
+	base := t.TempDir()
+	if _, err := InstallSileroVAD(context.Background(), InstallOptions{Dir: base, URL: srv.URL}); err == nil {
+		t.Fatal("expected error for implausibly small download")
+	}
+	if _, err := os.Stat(filepath.Join(base, model.SileroVADFile)); !os.IsNotExist(err) {
+		t.Fatalf("model file should not exist after rejected download: %v", err)
+	}
+}
 
 func TestUnpackTarWritesRegularFiles(t *testing.T) {
 	dir := t.TempDir()

@@ -28,16 +28,19 @@ Tests that don't need native ASR libs: `go test ./...`.
 ```sh
 install -Dm755 waydict ~/.local/bin/waydict
 
-# models (not embedded)
-waydict model install parakeet-v3-int8
-curl -fL -o ~/.local/share/waydict/models/silero_vad.onnx \
-  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+# models (not embedded). The Parakeet ASR model is required — the daemon exits on
+# startup without it. The silero VAD model is optional but recommended: without it
+# the daemon falls back to a cruder energy VAD and the silero-scaled [vad]
+# thresholds are misread as linear RMS.
+waydict model install all                # both; or install individually:
+#   waydict model install parakeet-v3-int8
+#   waydict model install silero-vad
 
 # optional config (sane defaults otherwise)
 mkdir -p ~/.config/waydict
 cp testdata/sample-config.toml ~/.config/waydict/config.toml
 
-waydict doctor   # verify build, models, wtype, PipeWire, compositor
+waydict doctor   # verify build, both models, wtype, PipeWire, compositor
 ```
 
 ## Usage
@@ -61,7 +64,8 @@ waydict stop   [--commit|--discard]
 waydict toggle
 waydict status [--json]
 waydict transcribe --file PATH [--inject]
-waydict model   check|install parakeet-v3-int8 [--dir PATH]
+waydict model   check [--config PATH] [--dir PATH]
+waydict model   install <parakeet-v3-int8|silero-vad|all> [--dir PATH]
 waydict bench   --file PATH [--repeat N]
 waydict doctor
 ```
