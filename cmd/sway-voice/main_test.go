@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"sway-voice/internal/asr"
+	"sway-voice/internal/audio"
 	"sway-voice/internal/config"
 	"sway-voice/internal/exitcode"
 	"sway-voice/internal/inject"
@@ -102,6 +106,50 @@ func TestTranscribeInjectFocusChangePreventsType(t *testing.T) {
 	}
 }
 
+func TestBenchRejectsEmptyAudio(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	validateModelForUseFn = func(config.Config) error { return nil }
+	readAudioFileFunc = func(string) (audio.FileAudio, error) {
+		return audio.FileAudio{}, nil
+	}
+	var out, err bytes.Buffer
+	if got := run([]string{"bench", "--file", "empty.wav"}, &out, &err); got != exitcode.Generic {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.Generic, out.String(), err.String())
+	}
+}
+
+func TestBenchUsesInputDurationWhenTranscriptOmitsIt(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	validateModelForUseFn = func(config.Config) error { return nil }
+	readAudioFileFunc = func(string) (audio.FileAudio, error) {
+		return audio.FileAudio{
+			Samples:    []float32{0, 0},
+			SampleRate: 2,
+			Duration:   time.Second,
+		}, nil
+	}
+	newASREngine = func(config.ASR) asr.Engine {
+		return fakeEngine{transcript: asr.Transcript{SegmentID: "bench"}}
+	}
+	var out, err bytes.Buffer
+	if got := run([]string{"bench", "--file", "sample.wav"}, &out, &err); got != exitcode.Success {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.Success, out.String(), err.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["audio_seconds"] != float64(1) {
+		t.Fatalf("audio_seconds = %v, want 1", payload["audio_seconds"])
+	}
+	rtf, ok := payload["rtf"].(float64)
+	if !ok || math.IsInf(rtf, 0) || math.IsNaN(rtf) {
+		t.Fatalf("invalid rtf: %v", payload["rtf"])
+	}
+}
+
 func TestModelCheckMissingDirectory(t *testing.T) {
 	var out, err bytes.Buffer
 	dir := filepath.Join(t.TempDir(), "missing")
@@ -118,10 +166,16 @@ func replaceTranscribeDeps(t *testing.T) func() {
 	oldTranscribe := transcribeFileFunc
 	oldInjector := newInjector
 	oldGuard := newFocusGuard
+	oldReadAudioFile := readAudioFileFunc
+	oldNewASREngine := newASREngine
+	oldValidateModel := validateModelForUseFn
 	return func() {
 		transcribeFileFunc = oldTranscribe
 		newInjector = oldInjector
 		newFocusGuard = oldGuard
+		readAudioFileFunc = oldReadAudioFile
+		newASREngine = oldNewASREngine
+		validateModelForUseFn = oldValidateModel
 	}
 }
 
@@ -154,4 +208,24 @@ func (f fakeInjector) TypeText(ctx context.Context, text string) error {
 		return nil
 	}
 	return f.typeText(ctx, text)
+}
+
+type fakeEngine struct {
+	transcript asr.Transcript
+	err        error
+	loaded     bool
+}
+
+func (f fakeEngine) Name() string { return "fake" }
+
+func (f fakeEngine) Load(context.Context) error {
+	return f.err
+}
+
+func (f fakeEngine) Close() error { return nil }
+
+func (f fakeEngine) Loaded() bool { return f.loaded }
+
+func (f fakeEngine) Transcribe(context.Context, asr.AudioSegment) (asr.Transcript, error) {
+	return f.transcript, f.err
 }

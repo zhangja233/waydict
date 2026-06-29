@@ -206,16 +206,16 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 }
 
 func transcribeFile(ctx context.Context, cfg config.Config, file string, stderr io.Writer) (asr.Transcript, int) {
-	if err := validateModelForUse(cfg); err != nil {
+	if err := validateModelForUseFn(cfg); err != nil {
 		fmt.Fprintln(stderr, err)
 		return asr.Transcript{}, exitcode.ModelInvalid
 	}
-	wav, err := audio.ReadFile(file)
+	wav, err := readAudioFileFunc(file)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return asr.Transcript{}, exitcode.Generic
 	}
-	engine := sherpaasr.New(cfg.ASR)
+	engine := newASREngine(cfg.ASR)
 	defer engine.Close()
 	seg := asr.AudioSegment{
 		ID:         "file",
@@ -248,6 +248,9 @@ var (
 	newFocusGuard      = func(cfg config.Config) focusGuard {
 		return swayipc.NewGuard(swayipc.New(cfg.Sway.Socket), cfg.Injection.FocusPolicy)
 	}
+	readAudioFileFunc     = audio.ReadFile
+	newASREngine          = func(cfg config.ASR) asr.Engine { return sherpaasr.New(cfg) }
+	validateModelForUseFn = validateModelForUse
 )
 
 func prepareInjection(ctx context.Context, cfg config.Config) (*preparedInjection, error) {
@@ -356,16 +359,20 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
-	if err := validateModelForUse(cfg); err != nil {
+	if err := validateModelForUseFn(cfg); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.ModelInvalid
 	}
-	wav, err := audio.ReadFile(*file)
+	wav, err := readAudioFileFunc(*file)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
-	engine := sherpaasr.New(cfg.ASR)
+	if len(wav.Samples) == 0 || wav.Duration <= 0 {
+		fmt.Fprintln(stderr, "audio file has no samples")
+		return exitcode.Generic
+	}
+	engine := newASREngine(cfg.ASR)
 	defer engine.Close()
 	if err := engine.Load(context.Background()); err != nil {
 		fmt.Fprintln(stderr, err)
@@ -388,11 +395,20 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	total := time.Since(start)
+	audioDuration := tr.AudioDuration
+	if audioDuration <= 0 {
+		audioDuration = wav.Duration
+	}
+	if audioDuration <= 0 {
+		fmt.Fprintln(stderr, "audio duration is zero")
+		return exitcode.Generic
+	}
+	decodeSeconds := total.Seconds() / float64(*repeat)
 	out := map[string]any{
 		"file":           *file,
-		"audio_seconds":  tr.AudioDuration.Seconds(),
-		"decode_seconds": total.Seconds() / float64(*repeat),
-		"rtf":            (total.Seconds() / float64(*repeat)) / tr.AudioDuration.Seconds(),
+		"audio_seconds":  audioDuration.Seconds(),
+		"decode_seconds": decodeSeconds,
+		"rtf":            decodeSeconds / audioDuration.Seconds(),
 		"threads":        cfg.ASR.NumThreads,
 		"provider":       cfg.ASR.Provider,
 		"model":          config.DefaultModelName,
