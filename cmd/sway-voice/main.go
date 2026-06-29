@@ -314,13 +314,35 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
+	if err := cfg.ValidateModelReadable(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.ModelInvalid
+	}
+	wav, err := audio.ReadFile(*file)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.Generic
+	}
+	engine := sherpaasr.New(cfg.ASR)
+	defer engine.Close()
+	if err := engine.Load(context.Background()); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.ModelInvalid
+	}
+	seg := asr.AudioSegment{
+		ID:         "bench",
+		Samples:    wav.Samples,
+		SampleRate: wav.SampleRate,
+		StartedAt:  time.Now(),
+		Duration:   wav.Duration,
+	}
 	start := time.Now()
 	var tr asr.Transcript
-	var code int
 	for i := 0; i < *repeat; i++ {
-		tr, code = transcribeFile(context.Background(), cfg, *file, stderr)
-		if code != exitcode.Success {
-			return code
+		tr, err = engine.Transcribe(context.Background(), seg)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitcode.RecognitionFailed
 		}
 	}
 	total := time.Since(start)
