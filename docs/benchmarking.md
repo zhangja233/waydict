@@ -22,3 +22,9 @@ The command prints JSON:
 ```
 
 Use the same audio file while changing `[asr].num_threads` in the config. Keep `provider = "cpu"` for supported builds.
+
+For the optional model test target, provide a real speech file:
+
+```sh
+SWAY_VOICE_TEST_WAV=/path/to/sample.wav make test-model
+```
