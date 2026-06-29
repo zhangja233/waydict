@@ -20,6 +20,7 @@ import (
 	sherpaasr "sway-voice/internal/asr/sherpa"
 	"sway-voice/internal/audio"
 	"sway-voice/internal/audio/pipewire"
+	"sway-voice/internal/buildinfo"
 	"sway-voice/internal/config"
 	"sway-voice/internal/control"
 	"sway-voice/internal/exitcode"
@@ -362,6 +363,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	check("WAYLAND_DISPLAY", envPresent("WAYLAND_DISPLAY"))
 	check("SWAYSOCK", envPresent("SWAYSOCK"))
 	check("XDG_RUNTIME_DIR", envPresent("XDG_RUNTIME_DIR"))
+	check("sherpa build", featureEnabled(buildinfo.SherpaEnabled, "rebuild with -tags sherpa and CGO_ENABLED=1"))
+	check("PipeWire build", featureEnabled(buildinfo.PipeWireEnabled, "rebuild with -tags pipewire and libpipewire-0.3 development files"))
 	check("wtype", inject.NewWtype(cfg.Injection).Available(context.Background()))
 	check("PipeWire", pipewire.Check())
 	focus := swayipc.New(cfg.Sway.Socket)
@@ -422,6 +425,13 @@ func printJSON(w io.Writer, v any) {
 func envPresent(name string) error {
 	if os.Getenv(name) == "" {
 		return fmt.Errorf("%s is not set", name)
+	}
+	return nil
+}
+
+func featureEnabled(enabled bool, message string) error {
+	if !enabled {
+		return fmt.Errorf(message)
 	}
 	return nil
 }
