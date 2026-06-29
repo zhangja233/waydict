@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -524,6 +526,9 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		a.setState(a.nextState())
 		return
 	}
+	if err := a.saveDebugSegment(seg); err != nil {
+		a.recordError(a.nextState(), "audio_save_failed", err)
+	}
 	a.setState(api.StateRecognizing)
 	tctx, cancel := context.WithTimeout(ctx, asrTimeout(seg.Duration))
 	tr, err := a.engine.Transcribe(tctx, seg)
@@ -580,6 +585,43 @@ func (a *App) finishModeAfterSegment(ctx context.Context) {
 		return
 	}
 	a.setState(a.nextState())
+}
+
+func (a *App) saveDebugSegment(seg asr.AudioSegment) error {
+	if !a.cfg.Debug.SaveAudioSegments {
+		return nil
+	}
+	if err := os.MkdirAll(a.cfg.Debug.SaveAudioDir, 0700); err != nil {
+		return err
+	}
+	name := safeSegmentFilename(seg.ID) + ".wav"
+	path := filepath.Join(a.cfg.Debug.SaveAudioDir, name)
+	return audio.WriteWAVFloat32(path, seg.Samples, seg.SampleRate)
+}
+
+func safeSegmentFilename(id string) string {
+	if id == "" {
+		return "segment"
+	}
+	var b strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "segment"
+	}
+	return b.String()
 }
 
 func (a *App) nextState() api.State {

@@ -532,6 +532,66 @@ func TestQueueSegmentDoesNotBlockWhenASRBackedUp(t *testing.T) {
 	}
 }
 
+func TestDebugSaveAudioSegments(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.Debug.SaveAudioSegments = true
+	cfg.Debug.SaveAudioDir = t.TempDir()
+	engine := &recordingEngine{seen: make(chan asr.AudioSegment, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Engine:   engine,
+		Injector: &MemoryInjector{},
+	})
+	app.queueSegment(asr.AudioSegment{
+		ID:         "seg/one",
+		Samples:    []float32{0.25, -0.25},
+		SampleRate: 16000,
+		Duration:   time.Millisecond,
+	})
+	select {
+	case <-engine.seen:
+	case <-time.After(time.Second):
+		t.Fatal("ASR did not receive segment")
+	}
+	path := filepath.Join(cfg.Debug.SaveAudioDir, "seg_one.wav")
+	got, err := audio.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Samples) != 2 || got.Samples[0] != 0.25 || got.Samples[1] != -0.25 {
+		t.Fatalf("saved samples = %v", got.Samples)
+	}
+}
+
+func TestDebugSaveAudioSegmentsDefaultOff(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.Debug.SaveAudioDir = filepath.Join(t.TempDir(), "segments")
+	engine := &recordingEngine{seen: make(chan asr.AudioSegment, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Engine:   engine,
+		Injector: &MemoryInjector{},
+	})
+	app.queueSegment(asr.AudioSegment{
+		ID:         "seg",
+		Samples:    []float32{0.25},
+		SampleRate: 16000,
+		Duration:   time.Millisecond,
+	})
+	select {
+	case <-engine.seen:
+	case <-time.After(time.Second):
+		t.Fatal("ASR did not receive segment")
+	}
+	if _, err := os.Stat(cfg.Debug.SaveAudioDir); !os.IsNotExist(err) {
+		t.Fatalf("debug save dir exists with default disabled: %v", err)
+	}
+}
+
 type resetTrackingSegmenter struct {
 	reset chan struct{}
 }
