@@ -177,7 +177,16 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
-	tr, code := transcribeFile(context.Background(), cfg, *file, stderr)
+	var prepared *preparedInjection
+	if *injectText {
+		var err error
+		prepared, err = prepareInjection(context.Background(), cfg)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitForErr(err)
+		}
+	}
+	tr, code := transcribeFileFunc(context.Background(), cfg, *file, stderr)
 	if code != exitcode.Success {
 		return code
 	}
@@ -188,7 +197,7 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 		if text == "" {
 			return exitcode.Success
 		}
-		if err := injectIntoFocus(context.Background(), cfg, text); err != nil {
+		if err := prepared.TypeText(context.Background(), text); err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitForErr(err)
 		}
@@ -223,22 +232,47 @@ func transcribeFile(ctx context.Context, cfg config.Config, file string, stderr 
 	return tr, exitcode.Success
 }
 
-func injectIntoFocus(ctx context.Context, cfg config.Config, text string) error {
-	w := inject.NewWtype(cfg.Injection)
+type focusGuard interface {
+	CaptureStart(context.Context) error
+	Check(context.Context) error
+}
+
+type preparedInjection struct {
+	injector inject.Injector
+	guard    focusGuard
+}
+
+var (
+	transcribeFileFunc = transcribeFile
+	newInjector        = func(cfg config.Injection) inject.Injector { return inject.NewWtype(cfg) }
+	newFocusGuard      = func(cfg config.Config) focusGuard {
+		return swayipc.NewGuard(swayipc.New(cfg.Sway.Socket), cfg.Injection.FocusPolicy)
+	}
+)
+
+func prepareInjection(ctx context.Context, cfg config.Config) (*preparedInjection, error) {
+	w := newInjector(cfg.Injection)
 	if err := w.Available(ctx); err != nil {
-		return fmt.Errorf("wtype unavailable: %w", err)
+		return nil, fmt.Errorf("wtype unavailable: %w", err)
 	}
-	focus := swayipc.New(cfg.Sway.Socket)
-	guard := swayipc.NewGuard(focus, cfg.Injection.FocusPolicy)
+	prepared := &preparedInjection{injector: w}
 	if cfg.Sway.FocusCheck {
+		guard := newFocusGuard(cfg)
 		if err := guard.CaptureStart(ctx); err != nil {
-			return err
+			return nil, err
 		}
-		if err := guard.Check(ctx); err != nil {
+		prepared.guard = guard
+	}
+	return prepared, nil
+}
+
+func (p *preparedInjection) TypeText(ctx context.Context, text string) error {
+	if p.guard != nil {
+		if err := p.guard.Check(ctx); err != nil {
 			return err
 		}
 	}
-	return w.TypeText(ctx, text)
+	return p.injector.TypeText(ctx, text)
 }
 
 func runModel(args []string, stdout, stderr io.Writer) int {
