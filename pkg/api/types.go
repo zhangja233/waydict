@@ -33,6 +33,7 @@ type Status struct {
 	Injection              InjectionStatus `json:"injection"`
 	Focus                  FocusStatus     `json:"focus"`
 	LastError              *ErrorInfo      `json:"last_error"`
+	LastWarning            *ErrorInfo      `json:"last_warning,omitempty"`
 	LastTranscriptRedacted bool            `json:"last_transcript_redacted"`
 	LastUninjectedText     string          `json:"last_uninjected_text,omitempty"`
 	LastTranscript         string          `json:"last_transcript,omitempty"`

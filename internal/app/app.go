@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,7 @@ type Dependencies struct {
 	Engine         asr.Engine
 	Injector       inject.Injector
 	Focus          *swayipc.Client
+	Logger         *slog.Logger
 	Shutdown       func()
 }
 
@@ -43,6 +45,7 @@ type App struct {
 	injector       inject.Injector
 	guard          *swayipc.Guard
 	focus          *swayipc.Client
+	logger         *slog.Logger
 	post           inject.PostProcessor
 
 	mu             sync.Mutex
@@ -77,6 +80,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		engine:         deps.Engine,
 		injector:       deps.Injector,
 		focus:          deps.Focus,
+		logger:         deps.Logger,
 		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
 		startedAt:      time.Now(),
 		rootCtx:        ctx,
@@ -176,6 +180,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.State = api.StateArming
 	a.status.Mode = modePtr(mode)
 	a.status.LastError = nil
+	a.status.LastWarning = nil
 	a.currentSession++
 	a.mu.Unlock()
 
@@ -637,8 +642,11 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		a.setState(a.nextState())
 		return
 	}
+	var focusWarning *swayipc.FocusChange
 	if a.guard != nil && a.cfg.Sway.FocusCheck {
-		if err := a.guard.Check(ctx); err != nil {
+		var err error
+		focusWarning, err = a.guard.CheckWithWarning(ctx)
+		if err != nil {
 			a.recordCanceledTranscript(text, err)
 			a.setState(a.nextState())
 			return
@@ -653,6 +661,9 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		}
 	}
 	a.recordTranscript(text)
+	if focusWarning != nil {
+		a.recordWarning("focus_changed", focusWarning.Error())
+	}
 	a.finishModeAfterSegment(ctx)
 }
 
@@ -794,6 +805,7 @@ func (a *App) recordError(state api.State, code string, err error) {
 	defer a.mu.Unlock()
 	a.status.State = state
 	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
+	a.status.LastWarning = nil
 	if state == api.StateIdle || state == api.StateError {
 		a.status.Mode = nil
 		a.capturing = false
@@ -823,6 +835,7 @@ func (a *App) recordTranscript(text string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.status.LastError = nil
+	a.status.LastWarning = nil
 	a.status.LastUninjectedText = ""
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if a.cfg.Daemon.RedactTranscriptsInLogs {
@@ -836,6 +849,7 @@ func (a *App) recordCanceledTranscript(text string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.status.LastError = &api.ErrorInfo{Code: "focus_changed", Message: err.Error()}
+	a.status.LastWarning = nil
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if !a.cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastUninjectedText = text
@@ -848,11 +862,22 @@ func (a *App) recordUninjected(text string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.status.LastError = &api.ErrorInfo{Code: "wtype_failed", Message: err.Error()}
+	a.status.LastWarning = nil
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if !a.cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastUninjectedText = text
 	} else {
 		a.status.LastUninjectedText = ""
+	}
+}
+
+func (a *App) recordWarning(code, message string) {
+	a.mu.Lock()
+	a.status.LastWarning = &api.ErrorInfo{Code: code, Message: message}
+	logger := a.logger
+	a.mu.Unlock()
+	if logger != nil {
+		logger.Warn(message, "code", code)
 	}
 }
 

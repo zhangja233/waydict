@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"sway-voice/internal/exitcode"
 	"sway-voice/internal/inject"
 	"sway-voice/internal/model"
+	"sway-voice/internal/swayipc"
 )
 
 func TestRunUsage(t *testing.T) {
@@ -117,6 +119,38 @@ func TestTranscribeInjectFocusChangePreventsType(t *testing.T) {
 	}
 	if typed {
 		t.Fatal("text was typed after focus change")
+	}
+}
+
+func TestTranscribeInjectWarnAndTypeReportsWarning(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	guard := &fakeFocusGuard{
+		warning: &swayipc.FocusChange{
+			From: swayipc.FocusedContainer{ID: 1},
+			To:   swayipc.FocusedContainer{ID: 2},
+		},
+	}
+	typed := ""
+	newFocusGuard = func(config.Config) focusGuard { return guard }
+	newInjector = func(config.Injection) inject.Injector {
+		return fakeInjector{typeText: func(_ context.Context, text string) error {
+			typed = text
+			return nil
+		}}
+	}
+	transcribeFileFunc = func(context.Context, config.Config, string, io.Writer) (asr.Transcript, int) {
+		return asr.Transcript{Text: "hello"}, exitcode.Success
+	}
+	var out, err bytes.Buffer
+	if got := run([]string{"transcribe", "--file", "sample.wav", "--inject"}, &out, &err); got != exitcode.Success {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.Success, out.String(), err.String())
+	}
+	if typed != "hello " {
+		t.Fatalf("typed = %q", typed)
+	}
+	if got := err.String(); !strings.Contains(got, "warning: focus_changed: focus changed from 1 to 2") {
+		t.Fatalf("stderr = %q", got)
 	}
 }
 
@@ -272,6 +306,7 @@ type fakeFocusGuard struct {
 	captured bool
 	checked  bool
 	checkErr error
+	warning  *swayipc.FocusChange
 }
 
 func (f *fakeFocusGuard) CaptureStart(context.Context) error {
@@ -279,9 +314,14 @@ func (f *fakeFocusGuard) CaptureStart(context.Context) error {
 	return nil
 }
 
-func (f *fakeFocusGuard) Check(context.Context) error {
+func (f *fakeFocusGuard) Check(ctx context.Context) error {
+	_, err := f.CheckWithWarning(ctx)
+	return err
+}
+
+func (f *fakeFocusGuard) CheckWithWarning(context.Context) (*swayipc.FocusChange, error) {
 	f.checked = true
-	return f.checkErr
+	return f.warning, f.checkErr
 }
 
 type fakeInjector struct {

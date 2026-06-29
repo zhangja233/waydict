@@ -193,7 +193,7 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 	var prepared *preparedInjection
 	if *injectText {
 		var err error
-		prepared, err = prepareInjection(context.Background(), cfg)
+		prepared, err = prepareInjection(context.Background(), cfg, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitForErr(err)
@@ -248,11 +248,13 @@ func transcribeFile(ctx context.Context, cfg config.Config, file string, stderr 
 type focusGuard interface {
 	CaptureStart(context.Context) error
 	Check(context.Context) error
+	CheckWithWarning(context.Context) (*swayipc.FocusChange, error)
 }
 
 type preparedInjection struct {
 	injector inject.Injector
 	guard    focusGuard
+	stderr   io.Writer
 }
 
 var (
@@ -266,12 +268,12 @@ var (
 	validateModelForUseFn = validateModelForUse
 )
 
-func prepareInjection(ctx context.Context, cfg config.Config) (*preparedInjection, error) {
+func prepareInjection(ctx context.Context, cfg config.Config, stderr io.Writer) (*preparedInjection, error) {
 	w := newInjector(cfg.Injection)
 	if err := w.Available(ctx); err != nil {
 		return nil, fmt.Errorf("wtype unavailable: %w", err)
 	}
-	prepared := &preparedInjection{injector: w}
+	prepared := &preparedInjection{injector: w, stderr: stderr}
 	if cfg.Sway.FocusCheck {
 		guard := newFocusGuard(cfg)
 		if err := guard.CaptureStart(ctx); err != nil {
@@ -284,8 +286,12 @@ func prepareInjection(ctx context.Context, cfg config.Config) (*preparedInjectio
 
 func (p *preparedInjection) TypeText(ctx context.Context, text string) error {
 	if p.guard != nil {
-		if err := p.guard.Check(ctx); err != nil {
+		warning, err := p.guard.CheckWithWarning(ctx)
+		if err != nil {
 			return err
+		}
+		if warning != nil && p.stderr != nil {
+			fmt.Fprintf(p.stderr, "warning: %s\n", warning.Error())
 		}
 	}
 	return p.injector.TypeText(ctx, text)
@@ -499,6 +505,9 @@ func printStatus(w io.Writer, st api.Status) {
 	fmt.Fprintf(w, "state=%s mode=%s model_loaded=%t audio=%s capturing=%t overruns=%d\n", st.State, mode, st.ASR.Loaded, st.Audio.Backend, st.Audio.Capturing, st.Audio.Overruns)
 	if st.LastError != nil {
 		fmt.Fprintf(w, "last_error=%s: %s\n", st.LastError.Code, st.LastError.Message)
+	}
+	if st.LastWarning != nil {
+		fmt.Fprintf(w, "last_warning=%s: %s\n", st.LastWarning.Code, st.LastWarning.Message)
 	}
 }
 

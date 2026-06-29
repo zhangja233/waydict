@@ -603,6 +603,65 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 	t.Fatalf("focus change was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
 }
 
+func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
+	socket := startFakeSway(t,
+		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":10,"type":"con","name":"first","focused":true}]}]}]}`,
+		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":11,"type":"con","name":"second","focused":true}]}]}]}`,
+	)
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.Injection.FocusPolicy = "warn_and_type"
+	cfg.VAD.Engine = "energy"
+	cfg.VAD.Threshold = 0.01
+	cfg.VAD.MinSpeechMS = 20
+	cfg.VAD.MinSilenceMS = 20
+	cfg.VAD.SpeechPadMS = 0
+	cfg.VAD.PreRollMS = 0
+	cfg.VAD.MaxSpeechSeconds = 3
+	chunk := func(v float32) []float32 {
+		out := make([]float32, 160)
+		for i := range out {
+			out[i] = v
+		}
+		return out
+	}
+	src := &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond}
+	for i := 0; i < 35; i++ {
+		src.Chunks = append(src.Chunks, chunk(0.1))
+	}
+	for i := 0; i < 5; i++ {
+		src.Chunks = append(src.Chunks, chunk(0))
+	}
+	mem := &MemoryInjector{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    src,
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{Text: "secret"},
+		Injector:  mem,
+		Focus:     swayipc.New(socket),
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		st := app.Status(ctx)
+		if st.LastWarning != nil && st.LastWarning.Code == "focus_changed" {
+			if len(mem.Texts) != 1 || mem.Texts[0] != "secret " {
+				t.Fatalf("text was not injected under warn_and_type: %v", mem.Texts)
+			}
+			if st.LastError != nil {
+				t.Fatalf("last error = %+v, want nil", st.LastError)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("focus warning was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
+}
+
 func TestWtypeFailureRetentionFollowsRedaction(t *testing.T) {
 	tests := []struct {
 		name       string

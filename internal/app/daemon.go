@@ -11,6 +11,7 @@ import (
 	"sway-voice/internal/config"
 	"sway-voice/internal/control"
 	"sway-voice/internal/inject"
+	svlog "sway-voice/internal/log"
 	"sway-voice/internal/model"
 	"sway-voice/internal/swayipc"
 	"sway-voice/internal/vad"
@@ -68,6 +69,7 @@ func RunDaemonWithOptions(ctx context.Context, cfg config.Config, opts DaemonOpt
 		Engine:         engine,
 		Injector:       inject.NewWtype(cfg.Injection),
 		Focus:          focus,
+		Logger:         svlog.New(cfg.Daemon.LogLevel, nil),
 		Shutdown:       cancelDaemon,
 	})
 	return control.NewServer(cfg.Daemon.Socket, application).Serve(ctx)

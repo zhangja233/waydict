@@ -19,6 +19,15 @@ type Guard struct {
 	start  *FocusedContainer
 }
 
+type FocusChange struct {
+	From FocusedContainer
+	To   FocusedContainer
+}
+
+func (c *FocusChange) Error() string {
+	return fmt.Sprintf("focus_changed: focus changed from %d to %d", c.From.ID, c.To.ID)
+}
+
 func NewGuard(client *Client, policy string) *Guard {
 	return &Guard{client: client, policy: Policy(policy)}
 }
@@ -37,17 +46,29 @@ func (g *Guard) CaptureStart(ctx context.Context) error {
 }
 
 func (g *Guard) Check(ctx context.Context) error {
+	_, err := g.CheckWithWarning(ctx)
+	return err
+}
+
+func (g *Guard) CheckWithWarning(ctx context.Context) (*FocusChange, error) {
 	if g.policy == TypeCurrent || g.client == nil || g.start == nil {
-		return nil
+		return nil, nil
 	}
 	f, err := g.client.Focused(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if f.ID != g.start.ID && g.policy == CancelOnFocusChange {
-		return fmt.Errorf("focus_changed: focus changed from %d to %d", g.start.ID, f.ID)
+	if f.ID == g.start.ID {
+		return nil, nil
 	}
-	return nil
+	change := &FocusChange{From: *g.start, To: f}
+	if g.policy == CancelOnFocusChange {
+		return nil, change
+	}
+	if g.policy == WarnAndType {
+		return change, nil
+	}
+	return nil, nil
 }
 
 func (g *Guard) StartedFocus() *FocusedContainer {
