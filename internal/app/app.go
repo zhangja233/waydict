@@ -1,0 +1,476 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"sway-voice/internal/asr"
+	"sway-voice/internal/audio"
+	"sway-voice/internal/config"
+	"sway-voice/internal/control"
+	"sway-voice/internal/inject"
+	"sway-voice/internal/swayipc"
+	"sway-voice/internal/vad"
+	"sway-voice/pkg/api"
+)
+
+type Dependencies struct {
+	Source    audio.Source
+	Segmenter vad.Segmenter
+	Engine    asr.Engine
+	Injector  inject.Injector
+	Focus     *swayipc.Client
+	Shutdown  func()
+}
+
+type App struct {
+	cfg       config.Config
+	source    audio.Source
+	segmenter vad.Segmenter
+	engine    asr.Engine
+	injector  inject.Injector
+	guard     *swayipc.Guard
+	focus     *swayipc.Client
+	post      inject.PostProcessor
+
+	mu            sync.Mutex
+	status        api.Status
+	startedAt     time.Time
+	sessionCancel context.CancelFunc
+	capturing     bool
+	rootCtx       context.Context
+	asrQueue      chan asr.AudioSegment
+	shutdown      func()
+}
+
+func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
+	a := &App{
+		cfg:       cfg,
+		source:    deps.Source,
+		segmenter: deps.Segmenter,
+		engine:    deps.Engine,
+		injector:  deps.Injector,
+		focus:     deps.Focus,
+		post:      inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
+		startedAt: time.Now(),
+		rootCtx:   ctx,
+		asrQueue:  make(chan asr.AudioSegment, 8),
+		shutdown:  deps.Shutdown,
+	}
+	if deps.Focus != nil {
+		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
+	}
+	a.status = api.Status{
+		State: api.StateIdle,
+		Audio: api.AudioStatus{
+			Backend:    cfg.Audio.Backend,
+			SampleRate: cfg.Audio.SampleRate,
+			LevelDBFS:  -120,
+		},
+		ASR: api.ASRStatus{
+			Engine:     cfg.ASR.Engine,
+			Model:      config.DefaultModelName,
+			Provider:   cfg.ASR.Provider,
+			NumThreads: cfg.ASR.NumThreads,
+			Loaded:     deps.Engine != nil && deps.Engine.Loaded(),
+		},
+		Focus: api.FocusStatus{
+			Sway: deps.Focus != nil,
+		},
+		LastTranscriptRedacted: cfg.Daemon.RedactTranscriptsInLogs,
+	}
+	go a.asrWorker(ctx)
+	return a
+}
+
+func (a *App) HandleControl(ctx context.Context, req control.Request) control.Response {
+	switch req.Command {
+	case "start":
+		mode, ok := parseMode(stringArg(req.Args, "mode"))
+		if !ok {
+			return control.Fail(req.ID, "usage", "mode must be toggle, oneshot, or hold", a.Status(ctx))
+		}
+		if err := a.Start(ctx, mode); err != nil {
+			code := classify(err)
+			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
+		}
+		return control.OK(req.ID, a.Status(ctx))
+	case "stop":
+		commit := boolArg(req.Args, "commit")
+		discard := boolArg(req.Args, "discard")
+		if !commit && !discard {
+			commit = true
+		}
+		if err := a.Stop(ctx, commit); err != nil {
+			code := classify(err)
+			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
+		}
+		return control.OK(req.ID, a.Status(ctx))
+	case "toggle":
+		if err := a.Toggle(ctx); err != nil {
+			code := classify(err)
+			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
+		}
+		return control.OK(req.ID, a.Status(ctx))
+	case "status":
+		return control.OK(req.ID, a.Status(ctx))
+	case "reload_config":
+		return control.OK(req.ID, a.Status(ctx))
+	case "shutdown":
+		_ = a.Stop(ctx, false)
+		if a.shutdown != nil {
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				a.shutdown()
+			}()
+		}
+		return control.OK(req.ID, a.Status(ctx))
+	default:
+		return control.Fail(req.ID, "usage", "unsupported command", a.Status(ctx))
+	}
+}
+
+func (a *App) Start(ctx context.Context, mode api.Mode) error {
+	a.mu.Lock()
+	if a.status.State != api.StateIdle && a.status.State != api.StateError {
+		a.mu.Unlock()
+		return nil
+	}
+	a.status.State = api.StateArming
+	a.status.Mode = modePtr(mode)
+	a.status.LastError = nil
+	a.mu.Unlock()
+
+	if a.injector != nil {
+		if err := a.injector.Available(ctx); err != nil {
+			a.recordError(api.StateIdle, "wtype_unavailable", err)
+			return err
+		}
+	}
+	if a.engine != nil && !a.engine.Loaded() {
+		if err := a.engine.Load(ctx); err != nil {
+			a.recordError(api.StateIdle, "model_invalid", err)
+			return err
+		}
+	}
+	if a.guard != nil && a.cfg.Sway.FocusCheck {
+		if err := a.guard.CaptureStart(ctx); err != nil {
+			a.recordError(api.StateIdle, "sway_unavailable", err)
+			return err
+		}
+		a.recordFocus(a.guard.StartedFocus())
+	}
+	if a.source == nil {
+		err := audio.ErrUnavailable
+		a.recordError(api.StateIdle, "pipewire_unavailable", err)
+		return err
+	}
+	if err := a.source.Start(ctx); err != nil {
+		a.recordError(api.StateIdle, "pipewire_unavailable", err)
+		return err
+	}
+	sessionCtx, cancel := context.WithCancel(a.rootCtx)
+	a.mu.Lock()
+	a.sessionCancel = cancel
+	a.capturing = true
+	a.status.State = api.StateListening
+	a.status.Audio.Capturing = true
+	a.status.ASR.Loaded = a.engine != nil && a.engine.Loaded()
+	a.mu.Unlock()
+	go a.captureLoop(sessionCtx)
+	return nil
+}
+
+func (a *App) Stop(ctx context.Context, commit bool) error {
+	a.mu.Lock()
+	cancel := a.sessionCancel
+	a.sessionCancel = nil
+	wasCapturing := a.capturing
+	a.capturing = false
+	a.status.Audio.Capturing = false
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if a.source != nil && wasCapturing {
+		if err := a.source.Pause(ctx); err != nil {
+			a.recordError(api.StateIdle, classify(err), err)
+			return err
+		}
+	}
+	if a.segmenter != nil {
+		for _, seg := range a.segmenter.Flush(commit, time.Now()) {
+			a.queueSegment(seg)
+		}
+	}
+	a.mu.Lock()
+	if len(a.asrQueue) == 0 {
+		a.status.State = api.StateIdle
+		a.status.Mode = nil
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) Toggle(ctx context.Context) error {
+	a.mu.Lock()
+	active := a.status.State != api.StateIdle && a.status.State != api.StateError
+	a.mu.Unlock()
+	if active {
+		return a.Stop(ctx, true)
+	}
+	return a.Start(ctx, api.ModeToggle)
+}
+
+func (a *App) Status(ctx context.Context) api.Status {
+	a.mu.Lock()
+	st := a.status
+	st.UptimeSeconds = time.Since(a.startedAt).Seconds()
+	if a.source != nil {
+		src := a.source.Stats()
+		st.Audio.LevelDBFS = src.LevelDBFS
+		st.Audio.Overruns = src.Overruns
+		st.Audio.Capturing = src.Capturing
+		if src.SampleRate != 0 {
+			st.Audio.SampleRate = src.SampleRate
+		}
+	}
+	if a.engine != nil {
+		st.ASR.Loaded = a.engine.Loaded()
+	}
+	a.mu.Unlock()
+	if a.focus != nil {
+		fctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+		if f, err := a.focus.Focused(fctx); err == nil {
+			st.Focus.Sway = true
+			st.Focus.FocusedID = f.ID
+			st.Focus.FocusedName = f.Name
+			st.Focus.AppID = f.AppID
+			st.Focus.Class = f.Class
+			st.Focus.Workspace = f.Workspace
+			st.Focus.Output = f.Output
+		}
+	}
+	return st
+}
+
+func (a *App) captureLoop(ctx context.Context) {
+	buf := make([]float32, a.cfg.Audio.SampleRate*a.cfg.Audio.QuantumMS/1000)
+	if len(buf) == 0 {
+		buf = make([]float32, 320)
+	}
+	for {
+		n, err := a.source.Read(ctx, buf)
+		if err != nil {
+			if ctx.Err() == nil {
+				a.recordError(api.StateIdle, classify(err), err)
+			}
+			return
+		}
+		if n == 0 {
+			continue
+		}
+		now := time.Now()
+		if a.segmenter == nil {
+			continue
+		}
+		for _, seg := range a.segmenter.Feed(buf[:n], now) {
+			a.queueSegment(seg)
+		}
+	}
+}
+
+func (a *App) queueSegment(seg asr.AudioSegment) {
+	a.mu.Lock()
+	a.status.State = api.StateRecognizing
+	a.mu.Unlock()
+	select {
+	case a.asrQueue <- seg:
+	case <-a.rootCtx.Done():
+	}
+}
+
+func (a *App) asrWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case seg := <-a.asrQueue:
+			a.handleSegment(ctx, seg)
+		}
+	}
+}
+
+func (a *App) handleSegment(ctx context.Context, seg asr.AudioSegment) {
+	if a.engine == nil {
+		a.recordError(a.nextState(), "recognition_failed", fmt.Errorf("ASR engine is unavailable"))
+		return
+	}
+	a.setState(api.StateRecognizing)
+	tctx, cancel := context.WithTimeout(ctx, asrTimeout(seg.Duration))
+	tr, err := a.engine.Transcribe(tctx, seg)
+	cancel()
+	if err != nil {
+		a.recordError(a.nextState(), "recognition_failed", err)
+		return
+	}
+	a.mu.Lock()
+	a.status.ASR.LastRTF = tr.RealTimeFactor
+	a.mu.Unlock()
+	if tr.Empty {
+		a.setState(a.nextState())
+		return
+	}
+	text := a.post.Apply(tr.Text)
+	if text == "" {
+		a.setState(a.nextState())
+		return
+	}
+	if a.guard != nil && a.cfg.Sway.FocusCheck {
+		if err := a.guard.Check(ctx); err != nil {
+			a.recordCanceledTranscript(text, err)
+			a.setState(a.nextState())
+			return
+		}
+	}
+	if a.injector != nil {
+		a.setState(api.StateTyping)
+		if err := a.injector.TypeText(ctx, text); err != nil {
+			a.recordUninjected(text, err)
+			a.setState(a.nextState())
+			return
+		}
+	}
+	a.recordTranscript(text)
+	a.finishModeAfterSegment(ctx)
+}
+
+func (a *App) finishModeAfterSegment(ctx context.Context) {
+	a.mu.Lock()
+	mode := a.status.Mode
+	a.mu.Unlock()
+	if mode != nil && *mode == api.ModeOneshot {
+		_ = a.Stop(ctx, false)
+		return
+	}
+	a.setState(a.nextState())
+}
+
+func (a *App) nextState() api.State {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.capturing {
+		return api.StateListening
+	}
+	return api.StateIdle
+}
+
+func (a *App) setState(state api.State) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.State = state
+	if state == api.StateIdle {
+		a.status.Mode = nil
+	}
+}
+
+func (a *App) recordError(state api.State, code string, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.State = state
+	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
+	if state == api.StateIdle || state == api.StateError {
+		a.status.Mode = nil
+		a.capturing = false
+		a.status.Audio.Capturing = false
+	}
+}
+
+func (a *App) recordFocus(f *swayipc.FocusedContainer) {
+	if f == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.Focus = api.FocusStatus{
+		Sway:        true,
+		FocusedID:   f.ID,
+		FocusedName: f.Name,
+		AppID:       f.AppID,
+		Class:       f.Class,
+		Workspace:   f.Workspace,
+		Output:      f.Output,
+	}
+}
+
+func (a *App) recordTranscript(text string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.LastError = nil
+	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
+	if a.cfg.Daemon.RedactTranscriptsInLogs {
+		a.status.LastTranscript = ""
+	} else {
+		a.status.LastTranscript = text
+	}
+}
+
+func (a *App) recordCanceledTranscript(text string, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.LastError = &api.ErrorInfo{Code: "focus_changed", Message: err.Error()}
+	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
+	if !a.cfg.Daemon.RedactTranscriptsInLogs {
+		a.status.LastUninjectedText = text
+	}
+}
+
+func (a *App) recordUninjected(text string, err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.status.LastError = &api.ErrorInfo{Code: "wtype_failed", Message: err.Error()}
+	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
+	if !a.cfg.Daemon.RedactTranscriptsInLogs {
+		a.status.LastUninjectedText = text
+	}
+}
+
+func stringArg(args map[string]any, name string) string {
+	if args == nil {
+		return ""
+	}
+	v, _ := args[name].(string)
+	return v
+}
+
+func boolArg(args map[string]any, name string) bool {
+	if args == nil {
+		return false
+	}
+	v, _ := args[name].(bool)
+	return v
+}
+
+func classify(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case errors.Is(err, audio.ErrUnavailable):
+		return "pipewire_unavailable"
+	case strings.Contains(msg, "focus_changed"):
+		return "focus_changed"
+	case strings.Contains(msg, "wtype"):
+		return "wtype_failed"
+	case strings.Contains(msg, "SWAYSOCK"), strings.Contains(msg, "sway"):
+		return "sway_unavailable"
+	default:
+		return "runtime_error"
+	}
+}

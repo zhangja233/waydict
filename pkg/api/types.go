@@ -1,0 +1,66 @@
+package api
+
+type State string
+
+const (
+	StateIdle        State = "idle"
+	StateArming      State = "arming"
+	StateListening   State = "listening"
+	StateSegmentOpen State = "segment_open"
+	StateRecognizing State = "recognizing"
+	StateTyping      State = "typing"
+	StateError       State = "error"
+)
+
+type Mode string
+
+const (
+	ModeToggle  Mode = "toggle"
+	ModeOneshot Mode = "oneshot"
+	ModeHold    Mode = "hold"
+)
+
+type ErrorInfo struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type Status struct {
+	State                  State       `json:"state"`
+	Mode                   *Mode       `json:"mode"`
+	Audio                  AudioStatus `json:"audio"`
+	ASR                    ASRStatus   `json:"asr"`
+	Focus                  FocusStatus `json:"focus"`
+	LastError              *ErrorInfo  `json:"last_error"`
+	LastTranscriptRedacted bool        `json:"last_transcript_redacted"`
+	LastUninjectedText     string      `json:"last_uninjected_text,omitempty"`
+	LastTranscript         string      `json:"last_transcript,omitempty"`
+	UptimeSeconds          float64     `json:"uptime_seconds,omitempty"`
+}
+
+type AudioStatus struct {
+	Backend    string  `json:"backend"`
+	SampleRate int     `json:"sample_rate"`
+	LevelDBFS  float64 `json:"level_dbfs"`
+	Overruns   uint64  `json:"overruns"`
+	Capturing  bool    `json:"capturing"`
+}
+
+type ASRStatus struct {
+	Engine     string  `json:"engine"`
+	Model      string  `json:"model"`
+	Provider   string  `json:"provider"`
+	NumThreads int     `json:"num_threads"`
+	Loaded     bool    `json:"loaded"`
+	LastRTF    float64 `json:"last_rtf"`
+}
+
+type FocusStatus struct {
+	Sway        bool   `json:"sway"`
+	FocusedID   int64  `json:"focused_id,omitempty"`
+	FocusedName string `json:"focused_name,omitempty"`
+	AppID       string `json:"app_id,omitempty"`
+	Class       string `json:"class,omitempty"`
+	Workspace   string `json:"workspace,omitempty"`
+	Output      string `json:"output,omitempty"`
+}

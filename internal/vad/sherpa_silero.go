@@ -1,0 +1,120 @@
+//go:build sherpa && cgo
+
+package vad
+
+import (
+	"os"
+	"time"
+
+	"sway-voice/internal/asr"
+	"sway-voice/internal/config"
+
+	onnx "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+)
+
+type SileroSegmenter struct {
+	cfg        config.VAD
+	sampleRate int
+	vad        *onnx.VoiceActivityDetector
+	baseTime   time.Time
+	nextID     int
+}
+
+func NewSegmenter(cfg config.VAD, sampleRate int) Segmenter {
+	if sampleRate == 0 {
+		sampleRate = 16000
+	}
+	if cfg.Engine == "silero" {
+		if _, err := os.Stat(cfg.Model); err == nil {
+			if s := NewSileroSegmenter(cfg, sampleRate); s != nil {
+				return s
+			}
+		}
+	}
+	return NewEnergySegmenter(cfg, sampleRate)
+}
+
+func NewSileroSegmenter(cfg config.VAD, sampleRate int) *SileroSegmenter {
+	v := onnx.NewVoiceActivityDetector(&onnx.VadModelConfig{
+		SileroVad: onnx.SileroVadModelConfig{
+			Model:              cfg.Model,
+			Threshold:          float32(cfg.Threshold),
+			MinSilenceDuration: float32(cfg.MinSilenceMS) / 1000,
+			MinSpeechDuration:  float32(cfg.MinSpeechMS) / 1000,
+			WindowSize:         cfg.WindowSize,
+			MaxSpeechDuration:  float32(cfg.MaxSpeechSeconds),
+		},
+		SampleRate: sampleRate,
+		NumThreads: 1,
+		Provider:   "cpu",
+	}, float32(cfg.MaxSpeechSeconds+cfg.PreRollMS/1000+2))
+	if v == nil {
+		return nil
+	}
+	return &SileroSegmenter{cfg: cfg, sampleRate: sampleRate, vad: v}
+}
+
+func (s *SileroSegmenter) Feed(samples []float32, now time.Time) []asr.AudioSegment {
+	if len(samples) == 0 || s.vad == nil {
+		return nil
+	}
+	if s.baseTime.IsZero() {
+		s.baseTime = now.Add(-durationForFrames(s.sampleRate, len(samples)))
+	}
+	s.vad.AcceptWaveform(samples)
+	return s.collect(false)
+}
+
+func (s *SileroSegmenter) Flush(commit bool, now time.Time) []asr.AudioSegment {
+	if s.vad == nil {
+		return nil
+	}
+	if commit {
+		s.vad.Flush()
+		return s.collect(false)
+	}
+	s.Reset()
+	_ = now
+	return nil
+}
+
+func (s *SileroSegmenter) Reset() {
+	if s.vad != nil {
+		s.vad.Reset()
+	}
+	s.baseTime = time.Time{}
+}
+
+func (s *SileroSegmenter) collect(degraded bool) []asr.AudioSegment {
+	var out []asr.AudioSegment
+	for !s.vad.IsEmpty() {
+		front := s.vad.Front()
+		s.vad.Pop()
+		id := "seg-silero-" + itoa6(s.nextID)
+		s.nextID++
+		started := s.baseTime
+		if !started.IsZero() {
+			started = started.Add(durationForFrames(s.sampleRate, front.Start))
+		}
+		samples := append([]float32(nil), front.Samples...)
+		out = append(out, asr.AudioSegment{
+			ID:         id,
+			Samples:    samples,
+			SampleRate: s.sampleRate,
+			StartedAt:  started,
+			Duration:   durationForFrames(s.sampleRate, len(samples)),
+			Degraded:   degraded,
+		})
+	}
+	return out
+}
+
+func itoa6(v int) string {
+	const digits = "0123456789"
+	var b [6]byte
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i] = digits[v%10]
+		v /= 10
+	}
+	return string(b[:])
+}
