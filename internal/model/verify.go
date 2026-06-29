@@ -56,6 +56,11 @@ func CheckDir(dir string, opts CheckOptions) CheckResult {
 		} else {
 			item.Size = st.Size()
 			item.OK = true
+			if err := checkReadable(path); err != nil {
+				item.OK = false
+				item.Message = err.Error()
+				res.addErr(fmt.Sprintf("%s is not readable: %v", req.Name, err))
+			}
 			if opts.StrictSizes && st.Size() < req.MinSize {
 				item.OK = false
 				item.Message = fmt.Sprintf("size %d is below plausible minimum %d", st.Size(), req.MinSize)
@@ -87,6 +92,14 @@ func checkTokens(path string) error {
 		return fmt.Errorf("tokens.txt is empty")
 	}
 	return nil
+}
+
+func checkReadable(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func verifyChecksums(dir string) error {
