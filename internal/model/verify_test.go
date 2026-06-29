@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"sway-voice/internal/config"
 )
 
 func TestCheckDirAcceptsReadableRequiredFiles(t *testing.T) {
@@ -75,6 +77,60 @@ func TestCheckDirRejectsAbsoluteChecksumPath(t *testing.T) {
 	res := CheckDir(dir, CheckOptions{})
 	if res.OK {
 		t.Fatalf("check unexpectedly passed: %+v", res)
+	}
+}
+
+func TestCheckConfigUsesConfiguredModelFiles(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"custom-encoder.onnx": "encoder",
+		"custom-decoder.onnx": "decoder",
+		"custom-joiner.onnx":  "joiner",
+		"custom-tokens.txt":   "a\nb\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Defaults()
+	cfg.ASR.ModelDir = dir
+	cfg.ASR.Encoder = "custom-encoder.onnx"
+	cfg.ASR.Decoder = "custom-decoder.onnx"
+	cfg.ASR.Joiner = "custom-joiner.onnx"
+	cfg.ASR.Tokens = "custom-tokens.txt"
+	res := CheckConfig(cfg, CheckOptions{})
+	if !res.OK {
+		t.Fatalf("check failed: %+v", res.Errors)
+	}
+	got := map[string]bool{}
+	for _, item := range res.Items {
+		got[filepath.Base(item.Path)] = item.OK
+	}
+	for name := range files {
+		if !got[name] {
+			t.Fatalf("configured file %s was not checked successfully: %+v", name, res.Items)
+		}
+	}
+}
+
+func TestCheckConfigRejectsMissingConfiguredModelFile(t *testing.T) {
+	dir := writeTinyModel(t)
+	cfg := config.Defaults()
+	cfg.ASR.ModelDir = dir
+	cfg.ASR.Tokens = "missing-tokens.txt"
+	res := CheckConfig(cfg, CheckOptions{})
+	if res.OK {
+		t.Fatalf("check unexpectedly passed: %+v", res)
+	}
+	found := false
+	for _, item := range res.Items {
+		if filepath.Base(item.Path) == "missing-tokens.txt" && !item.OK {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing configured tokens file was not reported: %+v", res.Items)
 	}
 }
 

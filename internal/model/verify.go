@@ -32,8 +32,19 @@ type CheckItem struct {
 	Size    int64  `json:"size,omitempty"`
 }
 
+type requiredPath struct {
+	Name    string
+	Path    string
+	MinSize int64
+}
+
 func CheckConfig(cfg config.Config, opts CheckOptions) CheckResult {
-	res := CheckDir(cfg.ASR.ModelDir, opts)
+	res := CheckResult{Dir: cfg.ASR.ModelDir, OK: true}
+	checkRequiredPaths(&res, configuredRequiredPaths(cfg), opts)
+	if err := checkTokens(cfg.TokensPath()); err != nil {
+		res.addErr(err.Error())
+	}
+	checkMetadataAndChecksums(&res, cfg.ASR.ModelDir)
 	if cfg.ASR.Provider != "cpu" {
 		res.addErr("asr.provider must be cpu")
 	}
@@ -42,10 +53,18 @@ func CheckConfig(cfg config.Config, opts CheckOptions) CheckResult {
 
 func CheckDir(dir string, opts CheckOptions) CheckResult {
 	res := CheckResult{Dir: dir, OK: true}
-	for _, req := range RequiredFiles() {
-		path := filepath.Join(dir, req.Name)
-		st, err := os.Stat(path)
-		item := CheckItem{Path: path}
+	checkRequiredPaths(&res, canonicalRequiredPaths(dir), opts)
+	if err := checkTokens(filepath.Join(dir, "tokens.txt")); err != nil {
+		res.addErr(err.Error())
+	}
+	checkMetadataAndChecksums(&res, dir)
+	return res
+}
+
+func checkRequiredPaths(res *CheckResult, files []requiredPath, opts CheckOptions) {
+	for _, req := range files {
+		st, err := os.Stat(req.Path)
+		item := CheckItem{Path: req.Path}
 		if err != nil {
 			item.OK = false
 			item.Message = err.Error()
@@ -57,7 +76,7 @@ func CheckDir(dir string, opts CheckOptions) CheckResult {
 		} else {
 			item.Size = st.Size()
 			item.OK = true
-			if err := checkReadable(path); err != nil {
+			if err := checkReadable(req.Path); err != nil {
 				item.OK = false
 				item.Message = err.Error()
 				res.addErr(fmt.Sprintf("%s is not readable: %v", req.Name, err))
@@ -70,9 +89,9 @@ func CheckDir(dir string, opts CheckOptions) CheckResult {
 		}
 		res.Items = append(res.Items, item)
 	}
-	if err := checkTokens(filepath.Join(dir, "tokens.txt")); err != nil {
-		res.addErr(err.Error())
-	}
+}
+
+func checkMetadataAndChecksums(res *CheckResult, dir string) {
 	for _, name := range MetadataFiles() {
 		if err := checkOptionalMetadata(filepath.Join(dir, name)); err != nil {
 			res.addWarning(fmt.Sprintf("%s: %v", name, err))
@@ -81,7 +100,29 @@ func CheckDir(dir string, opts CheckOptions) CheckResult {
 	if err := verifyChecksums(dir); err != nil {
 		res.addErr(err.Error())
 	}
-	return res
+}
+
+func canonicalRequiredPaths(dir string) []requiredPath {
+	required := RequiredFiles()
+	out := make([]requiredPath, 0, len(required))
+	for _, req := range required {
+		out = append(out, requiredPath{
+			Name:    req.Name,
+			Path:    filepath.Join(dir, req.Name),
+			MinSize: req.MinSize,
+		})
+	}
+	return out
+}
+
+func configuredRequiredPaths(cfg config.Config) []requiredPath {
+	required := RequiredFiles()
+	return []requiredPath{
+		{Name: cfg.ASR.Encoder, Path: cfg.EncoderPath(), MinSize: required[0].MinSize},
+		{Name: cfg.ASR.Decoder, Path: cfg.DecoderPath(), MinSize: required[1].MinSize},
+		{Name: cfg.ASR.Joiner, Path: cfg.JoinerPath(), MinSize: required[2].MinSize},
+		{Name: cfg.ASR.Tokens, Path: cfg.TokensPath(), MinSize: required[3].MinSize},
+	}
 }
 
 func (r *CheckResult) addErr(msg string) {
