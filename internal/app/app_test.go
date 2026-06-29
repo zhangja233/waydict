@@ -173,6 +173,84 @@ func TestStopRejectsCommitDiscardConflict(t *testing.T) {
 	}
 }
 
+func TestStopDiscardSuppressesPendingInjection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &gateEngine{
+		text:    "secret",
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	mem := &MemoryInjector{}
+	app := New(ctx, cfg, Dependencies{
+		Engine:   engine,
+		Injector: mem,
+	})
+	app.queueSegment(asr.AudioSegment{ID: "pending", Duration: time.Second})
+	select {
+	case <-engine.started:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not start")
+	}
+	if err := app.Stop(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	close(engine.release)
+	select {
+	case <-engine.done:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not finish")
+	}
+	if len(mem.Texts) != 0 {
+		t.Fatalf("discarded text was injected: %v", mem.Texts)
+	}
+	if got := app.Status(ctx).State; got != api.StateIdle {
+		t.Fatalf("state = %s, want idle", got)
+	}
+}
+
+func TestStopCommitAllowsPendingInjection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &gateEngine{
+		text:    "committed",
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	mem := &MemoryInjector{}
+	app := New(ctx, cfg, Dependencies{
+		Engine:   engine,
+		Injector: mem,
+	})
+	app.queueSegment(asr.AudioSegment{ID: "pending", Duration: time.Second})
+	select {
+	case <-engine.started:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not start")
+	}
+	if err := app.Stop(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	close(engine.release)
+	select {
+	case <-engine.done:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not finish")
+	}
+	if len(mem.Texts) != 1 || mem.Texts[0] != "committed " {
+		t.Fatalf("committed text was not injected: %v", mem.Texts)
+	}
+	if got := app.Status(ctx).State; got != api.StateIdle {
+		t.Fatalf("state = %s, want idle", got)
+	}
+}
+
 func TestAutoStopAfterSilence(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
@@ -492,6 +570,35 @@ func (b *blockingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (
 	}
 	<-ctx.Done()
 	return asr.Transcript{}, ctx.Err()
+}
+
+type gateEngine struct {
+	FakeEngine
+	text    string
+	started chan struct{}
+	release chan struct{}
+	done    chan struct{}
+}
+
+func (g *gateEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.Transcript, error) {
+	select {
+	case g.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		close(g.done)
+		return asr.Transcript{}, ctx.Err()
+	}
+	close(g.done)
+	return asr.Transcript{
+		SegmentID:     seg.ID,
+		Text:          g.text,
+		StartedAt:     seg.StartedAt,
+		AudioDuration: seg.Duration,
+		Empty:         g.text == "",
+	}, nil
 }
 
 type overrunSource struct {

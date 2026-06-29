@@ -41,16 +41,24 @@ type App struct {
 	focus         *swayipc.Client
 	post          inject.PostProcessor
 
-	mu            sync.Mutex
-	status        api.Status
-	startedAt     time.Time
-	sessionCancel context.CancelFunc
-	capturing     bool
-	rootCtx       context.Context
-	asrQueue      chan asr.AudioSegment
-	shutdown      func()
-	lastActivity  time.Time
-	retryingAudio bool
+	mu             sync.Mutex
+	status         api.Status
+	startedAt      time.Time
+	sessionCancel  context.CancelFunc
+	capturing      bool
+	rootCtx        context.Context
+	asrQueue       chan segmentJob
+	shutdown       func()
+	lastActivity   time.Time
+	retryingAudio  bool
+	currentSession uint64
+	discarded      map[uint64]struct{}
+	pendingASR     int
+}
+
+type segmentJob struct {
+	session uint64
+	segment asr.AudioSegment
 }
 
 func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
@@ -66,8 +74,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		post:          inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
 		startedAt:     time.Now(),
 		rootCtx:       ctx,
-		asrQueue:      make(chan asr.AudioSegment, 8),
+		asrQueue:      make(chan segmentJob, 8),
 		shutdown:      deps.Shutdown,
+		discarded:     make(map[uint64]struct{}),
 	}
 	if deps.Focus != nil {
 		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
@@ -157,6 +166,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.State = api.StateArming
 	a.status.Mode = modePtr(mode)
 	a.status.LastError = nil
+	a.currentSession++
 	a.mu.Unlock()
 
 	if a.injector != nil {
@@ -223,10 +233,14 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 func (a *App) Stop(ctx context.Context, commit bool) error {
 	a.mu.Lock()
 	cancel := a.sessionCancel
+	session := a.currentSession
 	a.sessionCancel = nil
 	wasCapturing := a.capturing
 	a.capturing = false
 	a.status.Audio.Capturing = false
+	if !commit {
+		a.discarded[session] = struct{}{}
+	}
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -246,7 +260,7 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 		}
 	}
 	a.mu.Lock()
-	if len(a.asrQueue) == 0 {
+	if !commit || a.pendingASR == 0 {
 		a.status.State = api.StateIdle
 		a.status.Mode = nil
 	}
@@ -357,13 +371,22 @@ func (a *App) captureLoop(ctx context.Context) {
 
 func (a *App) queueSegment(seg asr.AudioSegment) {
 	a.mu.Lock()
+	session := a.currentSession
+	if _, ok := a.discarded[session]; ok {
+		a.mu.Unlock()
+		return
+	}
 	a.status.State = api.StateRecognizing
 	a.lastActivity = time.Now()
+	a.pendingASR++
 	a.mu.Unlock()
+	job := segmentJob{session: session, segment: seg}
 	select {
-	case a.asrQueue <- seg:
+	case a.asrQueue <- job:
 	case <-a.rootCtx.Done():
+		a.finishASRJob(session)
 	default:
+		a.finishASRJob(session)
 		a.recordError(a.nextState(), "recognition_failed", fmt.Errorf("recognition queue full; dropped segment %s", seg.ID))
 	}
 }
@@ -480,15 +503,25 @@ func (a *App) asrWorker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case seg := <-a.asrQueue:
-			a.handleSegment(ctx, seg)
+		case job := <-a.asrQueue:
+			if a.sessionDiscarded(job.session) {
+				a.finishASRJob(job.session)
+				continue
+			}
+			a.handleSegment(ctx, job)
+			a.finishASRJob(job.session)
 		}
 	}
 }
 
-func (a *App) handleSegment(ctx context.Context, seg asr.AudioSegment) {
+func (a *App) handleSegment(ctx context.Context, job segmentJob) {
+	seg := job.segment
 	if a.engine == nil {
 		a.recordError(a.nextState(), "recognition_failed", fmt.Errorf("ASR engine is unavailable"))
+		return
+	}
+	if a.sessionDiscarded(job.session) {
+		a.setState(a.nextState())
 		return
 	}
 	a.setState(api.StateRecognizing)
@@ -497,6 +530,10 @@ func (a *App) handleSegment(ctx context.Context, seg asr.AudioSegment) {
 	cancel()
 	if err != nil {
 		a.recordError(a.nextState(), "recognition_failed", err)
+		return
+	}
+	if a.sessionDiscarded(job.session) {
+		a.setState(a.nextState())
 		return
 	}
 	a.mu.Lock()
@@ -544,10 +581,40 @@ func (a *App) finishModeAfterSegment(ctx context.Context) {
 func (a *App) nextState() api.State {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.pendingASR > 0 {
+		return api.StateRecognizing
+	}
 	if a.capturing {
 		return api.StateListening
 	}
 	return api.StateIdle
+}
+
+func (a *App) sessionDiscarded(session uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.discarded[session]
+	return ok
+}
+
+func (a *App) finishASRJob(session uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pendingASR > 0 {
+		a.pendingASR--
+	}
+	if a.pendingASR == 0 {
+		delete(a.discarded, session)
+		switch a.status.State {
+		case api.StateRecognizing, api.StateTyping:
+			if a.capturing {
+				a.status.State = api.StateListening
+			} else {
+				a.status.State = api.StateIdle
+				a.status.Mode = nil
+			}
+		}
+	}
 }
 
 func (a *App) setState(state api.State) {
