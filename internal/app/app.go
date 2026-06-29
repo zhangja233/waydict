@@ -312,6 +312,9 @@ func (a *App) captureLoop(ctx context.Context) {
 		n, err := src.Read(ctx, buf)
 		if err != nil {
 			if ctx.Err() == nil {
+				if a.segmenter != nil {
+					a.segmenter.Reset()
+				}
 				a.recordError(api.StateIdle, classify(err), err)
 				a.scheduleAudioRetry()
 			}

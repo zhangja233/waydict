@@ -251,6 +251,67 @@ func TestCaptureOverrunMarksSegment(t *testing.T) {
 	}
 }
 
+func TestCaptureErrorResetsSegmenter(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	seg := &resetTrackingSegmenter{reset: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    &errorSource{sampleRate: 16000},
+		Segmenter: seg,
+		Engine:    &FakeEngine{Text: "hello"},
+		Injector:  &MemoryInjector{},
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-seg.reset:
+	case <-time.After(time.Second):
+		t.Fatal("segmenter was not reset after capture error")
+	}
+	st := app.Status(ctx)
+	if st.LastError == nil || st.LastError.Code != "pipewire_unavailable" {
+		t.Fatalf("unexpected status after capture error: %+v", st.LastError)
+	}
+}
+
+type resetTrackingSegmenter struct {
+	reset chan struct{}
+}
+
+func (s *resetTrackingSegmenter) Feed([]float32, time.Time) []asr.AudioSegment {
+	return nil
+}
+
+func (s *resetTrackingSegmenter) Flush(bool, time.Time) []asr.AudioSegment {
+	return nil
+}
+
+func (s *resetTrackingSegmenter) Reset() {
+	select {
+	case s.reset <- struct{}{}:
+	default:
+	}
+}
+
+type errorSource struct {
+	sampleRate int
+}
+
+func (s *errorSource) Start(context.Context) error { return nil }
+func (s *errorSource) Pause(context.Context) error { return nil }
+func (s *errorSource) Stop(context.Context) error  { return nil }
+
+func (s *errorSource) Read(context.Context, []float32) (int, error) {
+	return 0, audio.ErrUnavailable
+}
+
+func (s *errorSource) Stats() audio.Stats {
+	return audio.Stats{SampleRate: s.sampleRate}
+}
+
 type recordingEngine struct {
 	FakeEngine
 	seen chan asr.AudioSegment
