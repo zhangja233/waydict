@@ -59,6 +59,9 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	if err := os.Rename(extracted, staging); err != nil {
 		return "", err
 	}
+	if err := writeMetadataFiles(staging); err != nil {
+		return "", err
+	}
 	if err := writeChecksums(staging); err != nil {
 		return "", err
 	}
@@ -188,6 +191,44 @@ func writeChecksums(dir string) error {
 	}
 	return nil
 }
+
+func writeMetadataFiles(dir string) error {
+	files := map[string]string{
+		"LICENSE":       metadataLicense,
+		"MODEL_CARD.md": metadataModelCard,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const metadataLicense = `Parakeet-TDT-0.6B-v3 model notice
+
+The installed ONNX model files are converted from NVIDIA parakeet-tdt-0.6b-v3 and are described by the upstream model card as CC-BY-4.0 licensed.
+
+Review the upstream model card and the sherpa-onnx conversion package notices before redistributing model assets:
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+https://github.com/k2-fsa/sherpa-onnx
+`
+
+const metadataModelCard = `# Parakeet-TDT-0.6B-v3 INT8
+
+These files are the sherpa-onnx INT8 conversion of NVIDIA parakeet-tdt-0.6b-v3 for local CPU speech recognition.
+
+Runtime assumptions used by sway-voice:
+
+- 16 kHz mono audio input.
+- sherpa-onnx transducer model type: nemo_transducer.
+- CPU provider.
+
+Upstream references:
+
+- NVIDIA model card: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+- sherpa-onnx conversion package: https://github.com/k2-fsa/sherpa-onnx
+`
 
 func fileSHA256(path string) (string, error) {
 	f, err := os.Open(path)

@@ -503,6 +503,9 @@ func printModelCheck(w io.Writer, res model.CheckResult) {
 	if len(res.Errors) > 0 {
 		fmt.Fprintln(w, strings.Join(res.Errors, "\n"))
 	}
+	for _, warning := range res.Warnings {
+		fmt.Fprintf(w, "WARN %s\n", warning)
+	}
 }
 
 func printJSON(w io.Writer, v any) {

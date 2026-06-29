@@ -23,6 +23,10 @@ func RequiredFiles() []RequiredFile {
 	}
 }
 
+func MetadataFiles() []string {
+	return []string{"LICENSE", "MODEL_CARD.md"}
+}
+
 func Paths(dir string) []string {
 	files := RequiredFiles()
 	out := make([]string, len(files))

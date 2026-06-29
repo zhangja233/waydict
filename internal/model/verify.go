@@ -18,10 +18,11 @@ type CheckOptions struct {
 }
 
 type CheckResult struct {
-	Dir    string      `json:"dir"`
-	OK     bool        `json:"ok"`
-	Items  []CheckItem `json:"items"`
-	Errors []string    `json:"errors,omitempty"`
+	Dir      string      `json:"dir"`
+	OK       bool        `json:"ok"`
+	Items    []CheckItem `json:"items"`
+	Errors   []string    `json:"errors,omitempty"`
+	Warnings []string    `json:"warnings,omitempty"`
 }
 
 type CheckItem struct {
@@ -72,6 +73,11 @@ func CheckDir(dir string, opts CheckOptions) CheckResult {
 	if err := checkTokens(filepath.Join(dir, "tokens.txt")); err != nil {
 		res.addErr(err.Error())
 	}
+	for _, name := range MetadataFiles() {
+		if err := checkOptionalMetadata(filepath.Join(dir, name)); err != nil {
+			res.addWarning(fmt.Sprintf("%s: %v", name, err))
+		}
+	}
 	if err := verifyChecksums(dir); err != nil {
 		res.addErr(err.Error())
 	}
@@ -83,6 +89,10 @@ func (r *CheckResult) addErr(msg string) {
 	r.Errors = append(r.Errors, msg)
 }
 
+func (r *CheckResult) addWarning(msg string) {
+	r.Warnings = append(r.Warnings, msg)
+}
+
 func checkTokens(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -92,6 +102,20 @@ func checkTokens(path string) error {
 		return fmt.Errorf("tokens.txt is empty")
 	}
 	return nil
+}
+
+func checkOptionalMetadata(path string) error {
+	st, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("is a directory")
+	}
+	return checkReadable(path)
 }
 
 func checkReadable(path string) error {

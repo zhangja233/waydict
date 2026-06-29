@@ -14,6 +14,33 @@ func TestCheckDirAcceptsReadableRequiredFiles(t *testing.T) {
 	}
 }
 
+func TestCheckDirWarnsOnMissingMetadata(t *testing.T) {
+	dir := writeTinyModel(t)
+	res := CheckDir(dir, CheckOptions{})
+	if !res.OK {
+		t.Fatalf("check failed: %+v", res.Errors)
+	}
+	if len(res.Warnings) != len(MetadataFiles()) {
+		t.Fatalf("warnings = %v, want one per metadata file", res.Warnings)
+	}
+}
+
+func TestCheckDirAcceptsMetadataFiles(t *testing.T) {
+	dir := writeTinyModel(t)
+	for _, name := range MetadataFiles() {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := CheckDir(dir, CheckOptions{})
+	if !res.OK {
+		t.Fatalf("check failed: %+v", res.Errors)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", res.Warnings)
+	}
+}
+
 func TestCheckDirRejectsUnreadableRequiredFile(t *testing.T) {
 	dir := writeTinyModel(t)
 	path := filepath.Join(dir, "encoder.int8.onnx")

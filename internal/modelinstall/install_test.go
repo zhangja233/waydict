@@ -60,6 +60,25 @@ func TestWriteChecksumsMatchesRequiredFiles(t *testing.T) {
 	}
 }
 
+func TestWriteMetadataFiles(t *testing.T) {
+	dir := writeTinyModel(t)
+	if err := writeMetadataFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range model.MetadataFiles() {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) == 0 {
+			t.Fatalf("%s was empty", name)
+		}
+	}
+	if res := model.CheckDir(dir, model.CheckOptions{}); !res.OK || len(res.Warnings) != 0 {
+		t.Fatalf("check = ok:%t errors:%v warnings:%v", res.OK, res.Errors, res.Warnings)
+	}
+}
+
 func writeTinyModel(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
