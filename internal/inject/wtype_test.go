@@ -32,3 +32,16 @@ func TestWtypeUsesStdin(t *testing.T) {
 		t.Fatalf("stdin = %q", data)
 	}
 }
+
+func TestWtypeRejectsNonExecutablePath(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "not-executable")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults().Injection
+	cfg.WtypePath = path
+	if err := NewWtype(cfg).Available(context.Background()); err == nil {
+		t.Fatal("expected non-executable path error")
+	}
+}

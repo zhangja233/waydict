@@ -34,6 +34,9 @@ func (w *Wtype) Available(context.Context) error {
 		if st.IsDir() {
 			return fmt.Errorf("%s is a directory", w.path)
 		}
+		if st.Mode()&0111 == 0 {
+			return fmt.Errorf("%s is not executable", w.path)
+		}
 		return nil
 	}
 	_, err := exec.LookPath(w.path)
