@@ -26,16 +26,17 @@ type ErrorInfo struct {
 }
 
 type Status struct {
-	State                  State       `json:"state"`
-	Mode                   *Mode       `json:"mode"`
-	Audio                  AudioStatus `json:"audio"`
-	ASR                    ASRStatus   `json:"asr"`
-	Focus                  FocusStatus `json:"focus"`
-	LastError              *ErrorInfo  `json:"last_error"`
-	LastTranscriptRedacted bool        `json:"last_transcript_redacted"`
-	LastUninjectedText     string      `json:"last_uninjected_text,omitempty"`
-	LastTranscript         string      `json:"last_transcript,omitempty"`
-	UptimeSeconds          float64     `json:"uptime_seconds,omitempty"`
+	State                  State           `json:"state"`
+	Mode                   *Mode           `json:"mode"`
+	Audio                  AudioStatus     `json:"audio"`
+	ASR                    ASRStatus       `json:"asr"`
+	Injection              InjectionStatus `json:"injection"`
+	Focus                  FocusStatus     `json:"focus"`
+	LastError              *ErrorInfo      `json:"last_error"`
+	LastTranscriptRedacted bool            `json:"last_transcript_redacted"`
+	LastUninjectedText     string          `json:"last_uninjected_text,omitempty"`
+	LastTranscript         string          `json:"last_transcript,omitempty"`
+	UptimeSeconds          float64         `json:"uptime_seconds,omitempty"`
 }
 
 type AudioStatus struct {
@@ -53,6 +54,12 @@ type ASRStatus struct {
 	NumThreads int     `json:"num_threads"`
 	Loaded     bool    `json:"loaded"`
 	LastRTF    float64 `json:"last_rtf"`
+}
+
+type InjectionStatus struct {
+	Engine    string `json:"engine"`
+	Available bool   `json:"available"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 type FocusStatus struct {

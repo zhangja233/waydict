@@ -35,6 +35,9 @@ func TestStateTransitionsStartStop(t *testing.T) {
 	if got := app.Status(ctx).State; got != api.StateIdle {
 		t.Fatalf("state after stop = %s", got)
 	}
+	if !app.Status(ctx).Injection.Available {
+		t.Fatal("expected memory injector to report available")
+	}
 }
 
 func TestSourceFactoryUsedOnStart(t *testing.T) {

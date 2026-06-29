@@ -83,6 +83,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 			NumThreads: cfg.ASR.NumThreads,
 			Loaded:     deps.Engine != nil && deps.Engine.Loaded(),
 		},
+		Injection: api.InjectionStatus{
+			Engine: cfg.Injection.Engine,
+		},
 		Focus: api.FocusStatus{
 			Sway: deps.Focus != nil,
 		},
@@ -265,6 +268,17 @@ func (a *App) Status(ctx context.Context) api.Status {
 		st.ASR.Loaded = a.engine.Loaded()
 	}
 	a.mu.Unlock()
+	if a.injector != nil {
+		ictx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		err := a.injector.Available(ictx)
+		cancel()
+		st.Injection.Available = err == nil
+		if err != nil {
+			st.Injection.LastError = err.Error()
+		} else {
+			st.Injection.LastError = ""
+		}
+	}
 	if a.focus != nil {
 		fctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer cancel()
