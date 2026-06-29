@@ -43,7 +43,13 @@ func (s *EnergySegmenter) Feed(samples []float32, now time.Time) []asr.AudioSegm
 		return nil
 	}
 	s.updatePreRoll(samples)
-	isSpeech := rms(samples) >= s.threshold()
+	// Hysteresis: a higher bar to open a segment than to keep it open, so
+	// natural pauses and quiet consonants do not chop an utterance apart.
+	bar := s.threshold()
+	if s.open {
+		bar = s.closeThreshold()
+	}
+	isSpeech := rms(samples) >= bar
 	if isSpeech {
 		s.speechFrames += len(samples)
 		s.silenceFrames = 0
@@ -163,14 +169,32 @@ func (s *EnergySegmenter) resetOpen() {
 	s.captureOverrun = false
 }
 
+// Energy thresholds operate on linear RMS. Threshold/NegativeThreshold are
+// shared with the silero engine, whose values live on a 0..1 probability scale,
+// so anything outside a plausible RMS range falls back to a sane energy default
+// instead of silently disabling (or saturating) detection.
+const (
+	defaultEnergyOpenThreshold  = 0.06
+	defaultEnergyCloseThreshold = 0.03
+)
+
 func (s *EnergySegmenter) threshold() float64 {
-	if s.cfg.Threshold <= 0 {
-		return 0.02
-	}
-	if s.cfg.Threshold > 0.2 {
-		return 0.02
+	if s.cfg.Threshold <= 0 || s.cfg.Threshold > 0.2 {
+		return defaultEnergyOpenThreshold
 	}
 	return s.cfg.Threshold
+}
+
+// closeThreshold is the lower hysteresis bound used while a segment is open.
+func (s *EnergySegmenter) closeThreshold() float64 {
+	open := s.threshold()
+	if n := s.cfg.NegativeThreshold; n > 0 && n < open {
+		return n
+	}
+	if half := open * 0.5; half > 0 {
+		return half
+	}
+	return defaultEnergyCloseThreshold
 }
 
 func rms(samples []float32) float64 {

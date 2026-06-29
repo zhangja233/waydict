@@ -94,6 +94,49 @@ func TestEnergyCommitKeepsShortOpenSegment(t *testing.T) {
 	}
 }
 
+func TestEnergyHysteresisKeepsSegmentOpenThroughDip(t *testing.T) {
+	cfg := config.Defaults().VAD
+	cfg.Engine = "energy"
+	cfg.Threshold = 0.06         // open bar
+	cfg.NegativeThreshold = 0.02 // close bar
+	cfg.MinSpeechMS = 20
+	cfg.MinSilenceMS = 100
+	cfg.SpeechPadMS = 0
+	cfg.PreRollMS = 0
+	cfg.MaxSpeechSeconds = 5
+	s := NewEnergySegmenter(cfg, 16000)
+	now := time.Now()
+	for i := 0; i < 6; i++ {
+		if segs := s.Feed(testChunk(0.10), now); len(segs) != 0 {
+			t.Fatalf("unexpected segment while opening: %v", segs)
+		}
+	}
+	if !s.SegmentOpen() {
+		t.Fatal("segment did not open on loud speech")
+	}
+	// A level between the close (0.02) and open (0.06) bars must NOT end the
+	// segment; with the old single-threshold logic this dip closed it.
+	for i := 0; i < 30; i++ {
+		if segs := s.Feed(testChunk(0.04), now); len(segs) != 0 {
+			t.Fatalf("segment closed during mid-level dip (hysteresis broken): %v", segs)
+		}
+	}
+	if !s.SegmentOpen() {
+		t.Fatal("segment closed during a dip above the close threshold")
+	}
+	// Dropping below the close bar must end the segment after min silence.
+	closed := false
+	for i := 0; i < 30; i++ {
+		if segs := s.Feed(testChunk(0.0), now); len(segs) == 1 {
+			closed = true
+			break
+		}
+	}
+	if !closed {
+		t.Fatal("segment never closed after dropping below the close threshold")
+	}
+}
+
 func testEnergyConfig() config.VAD {
 	cfg := config.Defaults().VAD
 	cfg.Threshold = 0.01
