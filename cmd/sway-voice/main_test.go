@@ -26,6 +26,22 @@ func TestStatusDaemonUnavailable(t *testing.T) {
 	}
 }
 
+func TestStartRejectsInvalidModeBeforeDial(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	var out, err bytes.Buffer
+	if got := run([]string{"start", "--mode", "streaming"}, &out, &err); got != exitcode.Usage {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.Usage, out.String(), err.String())
+	}
+}
+
+func TestStopRejectsCommitDiscardConflict(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	var out, err bytes.Buffer
+	if got := run([]string{"stop", "--commit", "--discard"}, &out, &err); got != exitcode.Usage {
+		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.Usage, out.String(), err.String())
+	}
+}
+
 func TestModelCheckMissingDirectory(t *testing.T) {
 	var out, err bytes.Buffer
 	dir := filepath.Join(t.TempDir(), "missing")

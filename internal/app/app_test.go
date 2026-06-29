@@ -121,6 +121,24 @@ func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 	}
 }
 
+func TestStopRejectsCommitDiscardConflict(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Engine:   &FakeEngine{Text: "hello", IsLoaded: true},
+		Injector: &MemoryInjector{},
+	})
+	resp := app.HandleControl(ctx, control.NewRequest("stop", map[string]any{
+		"commit":  true,
+		"discard": true,
+	}))
+	if resp.OK || resp.Error == nil || resp.Error.Code != "usage" {
+		t.Fatalf("response error = %+v, want usage", resp.Error)
+	}
+}
+
 func TestAutoStopAfterSilence(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1

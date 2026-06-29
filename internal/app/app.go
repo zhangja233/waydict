@@ -113,6 +113,9 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 	case "stop":
 		commit := boolArg(req.Args, "commit")
 		discard := boolArg(req.Args, "discard")
+		if commit && discard {
+			return control.Fail(req.ID, "usage", "stop accepts only one of commit or discard", a.Status(ctx))
+		}
 		if !commit && !discard {
 			commit = true
 		}

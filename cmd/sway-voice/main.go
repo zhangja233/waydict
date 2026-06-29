@@ -124,9 +124,17 @@ func sendCommand(args []string, stdout, stderr io.Writer, command string) int {
 	switch command {
 	case "start":
 		if *mode != "" {
+			if *mode != "toggle" && *mode != "oneshot" && *mode != "hold" {
+				fmt.Fprintln(stderr, "mode must be toggle, oneshot, or hold")
+				return exitcode.Usage
+			}
 			reqArgs["mode"] = *mode
 		}
 	case "stop":
+		if *commit && *discard {
+			fmt.Fprintln(stderr, "stop accepts only one of --commit or --discard")
+			return exitcode.Usage
+		}
 		reqArgs["commit"] = *commit
 		reqArgs["discard"] = *discard
 	}
