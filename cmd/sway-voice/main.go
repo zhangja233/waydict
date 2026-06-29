@@ -189,7 +189,7 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 }
 
 func transcribeFile(ctx context.Context, cfg config.Config, file string, stderr io.Writer) (asr.Transcript, int) {
-	if err := cfg.ValidateModelReadable(); err != nil {
+	if err := validateModelForUse(cfg); err != nil {
 		fmt.Fprintln(stderr, err)
 		return asr.Transcript{}, exitcode.ModelInvalid
 	}
@@ -314,7 +314,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
-	if err := cfg.ValidateModelReadable(); err != nil {
+	if err := validateModelForUse(cfg); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitcode.ModelInvalid
 	}
@@ -442,6 +442,14 @@ func printJSON(w io.Writer, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
+}
+
+func validateModelForUse(cfg config.Config) error {
+	res := model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
+	if !res.OK {
+		return fmt.Errorf("model validation failed: %s", strings.Join(res.Errors, "; "))
+	}
+	return nil
 }
 
 func envPresent(name string) error {
