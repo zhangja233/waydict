@@ -198,6 +198,12 @@ func (c Config) Validate() error {
 	if c.Audio.Backend != "pipewire" {
 		return fmt.Errorf("audio.backend must equal pipewire")
 	}
+	if c.Audio.Format != "f32le" {
+		return fmt.Errorf("audio.format must equal f32le")
+	}
+	if c.Audio.QuantumMS <= 0 {
+		return fmt.Errorf("audio.quantum_ms must be positive")
+	}
 	if c.ASR.Provider != "cpu" {
 		return fmt.Errorf("asr.provider must equal cpu")
 	}
@@ -210,8 +216,35 @@ func (c Config) Validate() error {
 	if !c.Sway.RequireSway {
 		return fmt.Errorf("sway.require_sway must be true")
 	}
+	if c.Daemon.AutoStopAfterSilenceSeconds < 0 {
+		return fmt.Errorf("daemon.auto_stop_after_silence_seconds must not be negative")
+	}
 	if c.ASR.NumThreads < 1 || c.ASR.NumThreads > runtime.NumCPU() {
 		return fmt.Errorf("asr.num_threads must be between 1 and %d", runtime.NumCPU())
+	}
+	if c.VAD.Engine != "silero" && c.VAD.Engine != "energy" {
+		return fmt.Errorf("vad.engine must be silero or energy")
+	}
+	if c.VAD.WindowSize <= 0 {
+		return fmt.Errorf("vad.window_size must be positive")
+	}
+	if c.VAD.Threshold <= 0 || c.VAD.Threshold > 1 {
+		return fmt.Errorf("vad.threshold must be between 0 and 1")
+	}
+	if c.VAD.NegativeThreshold < 0 || c.VAD.NegativeThreshold > c.VAD.Threshold {
+		return fmt.Errorf("vad.negative_threshold must be between 0 and vad.threshold")
+	}
+	if c.VAD.MinSpeechMS <= 0 {
+		return fmt.Errorf("vad.min_speech_ms must be positive")
+	}
+	if c.VAD.MinSilenceMS <= 0 {
+		return fmt.Errorf("vad.min_silence_ms must be positive")
+	}
+	if c.VAD.SpeechPadMS < 0 {
+		return fmt.Errorf("vad.speech_pad_ms must not be negative")
+	}
+	if c.VAD.PreRollMS < 0 {
+		return fmt.Errorf("vad.pre_roll_ms must not be negative")
 	}
 	if c.VAD.MaxSpeechSeconds < 3 || c.VAD.MaxSpeechSeconds > 60 {
 		return fmt.Errorf("vad.max_speech_seconds must be between 3 and 60")
@@ -228,6 +261,12 @@ func (c Config) Validate() error {
 	}
 	if c.Audio.Channels != 1 {
 		return fmt.Errorf("audio.channels must equal 1")
+	}
+	if c.Injection.KeyDelayMS < 0 {
+		return fmt.Errorf("injection.key_delay_ms must not be negative")
+	}
+	if c.Injection.TimeoutMS <= 0 {
+		return fmt.Errorf("injection.timeout_ms must be positive")
 	}
 	if c.Injection.FocusPolicy != "cancel_on_focus_change" && c.Injection.FocusPolicy != "warn_and_type" && c.Injection.FocusPolicy != "type_current" {
 		return fmt.Errorf("unsupported injection.focus_policy %q", c.Injection.FocusPolicy)

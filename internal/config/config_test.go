@@ -41,3 +41,53 @@ func TestExpandPathRejectsUnknownVariable(t *testing.T) {
 		t.Fatal("expected unknown variable error")
 	}
 }
+
+func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*Config)
+	}{
+		{
+			name: "format",
+			edit: func(c *Config) { c.Audio.Format = "s16le" },
+		},
+		{
+			name: "quantum",
+			edit: func(c *Config) { c.Audio.QuantumMS = 0 },
+		},
+		{
+			name: "auto stop",
+			edit: func(c *Config) { c.Daemon.AutoStopAfterSilenceSeconds = -1 },
+		},
+		{
+			name: "vad engine",
+			edit: func(c *Config) { c.VAD.Engine = "unknown" },
+		},
+		{
+			name: "vad threshold",
+			edit: func(c *Config) { c.VAD.Threshold = 2 },
+		},
+		{
+			name: "vad negative threshold",
+			edit: func(c *Config) { c.VAD.NegativeThreshold = c.VAD.Threshold + 0.1 },
+		},
+		{
+			name: "injection delay",
+			edit: func(c *Config) { c.Injection.KeyDelayMS = -1 },
+		},
+		{
+			name: "injection timeout",
+			edit: func(c *Config) { c.Injection.TimeoutMS = 0 },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ASR.NumThreads = 1
+			tc.edit(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
