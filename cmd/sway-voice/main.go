@@ -27,6 +27,7 @@ import (
 	"sway-voice/internal/exitcode"
 	"sway-voice/internal/inject"
 	"sway-voice/internal/model"
+	"sway-voice/internal/modelinstall"
 	"sway-voice/internal/swayipc"
 	"sway-voice/pkg/api"
 )
@@ -333,7 +334,7 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 			return exitcode.Usage
 		}
 		ctx := context.Background()
-		path, err := model.InstallParakeetV3Int8(ctx, model.InstallOptions{Dir: *dir})
+		path, err := modelinstall.InstallParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitcode.Generic

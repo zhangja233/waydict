@@ -1,4 +1,4 @@
-package model
+package modelinstall
 
 import (
 	"archive/tar"
@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"sway-voice/internal/model"
 )
 
 type InstallOptions struct {
@@ -30,7 +32,7 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	}
 	url := opts.URL
 	if url == "" {
-		url = ParakeetV3ArchiveURL
+		url = model.ParakeetV3ArchiveURL
 	}
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return "", err
@@ -47,11 +49,11 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	if err := unpackTarBz2(archivePath, tmp); err != nil {
 		return "", err
 	}
-	extracted := filepath.Join(tmp, SherpaParakeetV3Int8)
+	extracted := filepath.Join(tmp, model.SherpaParakeetV3Int8)
 	if _, err := os.Stat(extracted); err != nil {
 		return "", err
 	}
-	final := filepath.Join(base, ParakeetV3Int8ID)
+	final := filepath.Join(base, model.ParakeetV3Int8ID)
 	staging := final + ".new"
 	_ = os.RemoveAll(staging)
 	if err := os.Rename(extracted, staging); err != nil {
@@ -169,12 +171,12 @@ func modeOrDefault(mode os.FileMode, def os.FileMode) os.FileMode {
 }
 
 func writeChecksums(dir string) error {
-	out, err := os.Create(filepath.Join(dir, DefaultChecksumFile))
+	out, err := os.Create(filepath.Join(dir, model.DefaultChecksumFile))
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	for _, req := range RequiredFiles() {
+	for _, req := range model.RequiredFiles() {
 		path := filepath.Join(dir, req.Name)
 		sum, err := fileSHA256(path)
 		if err != nil {
@@ -187,7 +189,15 @@ func writeChecksums(dir string) error {
 	return nil
 }
 
-func BytesSHA256(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -1,4 +1,4 @@
-package model
+package modelinstall
 
 import (
 	"archive/tar"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"sway-voice/internal/model"
 )
 
 func TestUnpackTarWritesRegularFiles(t *testing.T) {
@@ -47,15 +49,32 @@ func TestWriteChecksumsMatchesRequiredFiles(t *testing.T) {
 	if err := writeChecksums(dir); err != nil {
 		t.Fatal(err)
 	}
-	if res := CheckDir(dir, CheckOptions{}); !res.OK {
+	if res := model.CheckDir(dir, model.CheckOptions{}); !res.OK {
 		t.Fatalf("check failed: %+v", res.Errors)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "tokens.txt"), []byte("changed\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if res := CheckDir(dir, CheckOptions{}); res.OK {
+	if res := model.CheckDir(dir, model.CheckOptions{}); res.OK {
 		t.Fatalf("check unexpectedly passed after checksum mismatch: %+v", res)
 	}
+}
+
+func writeTinyModel(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"encoder.int8.onnx": "encoder",
+		"decoder.int8.onnx": "decoder",
+		"joiner.int8.onnx":  "joiner",
+		"tokens.txt":        "a\nb\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
 }
 
 type tarEntry struct {
