@@ -19,6 +19,7 @@ import (
 	"sway-voice/internal/control"
 	"sway-voice/internal/exitcode"
 	"sway-voice/internal/inject"
+	"sway-voice/internal/model"
 )
 
 func TestRunUsage(t *testing.T) {
@@ -209,6 +210,34 @@ func TestModelCheckMissingDirectory(t *testing.T) {
 	}
 	if out.Len() == 0 {
 		t.Fatal("expected diagnostic output")
+	}
+}
+
+func TestPrintDoctorModelWarningsAreNonFatal(t *testing.T) {
+	var out bytes.Buffer
+	ok := printDoctorModel(&out, model.CheckResult{
+		OK:       true,
+		Warnings: []string{"LICENSE missing"},
+	})
+	if !ok {
+		t.Fatal("warning-only model check was treated as fatal")
+	}
+	if got := out.String(); got != "OK   model             \nWARN model              LICENSE missing\n" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestPrintDoctorModelFailure(t *testing.T) {
+	var out bytes.Buffer
+	ok := printDoctorModel(&out, model.CheckResult{
+		OK:     false,
+		Errors: []string{"tokens.txt is empty"},
+	})
+	if ok {
+		t.Fatal("failed model check was treated as ok")
+	}
+	if got := out.String(); got != "FAIL model              tokens.txt is empty\n" {
+		t.Fatalf("output = %q", got)
 	}
 }
 

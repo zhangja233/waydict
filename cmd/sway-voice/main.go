@@ -469,17 +469,26 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	check("Sway IPC", focus.Available(fctx))
 	cancel()
 	res := model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
-	if res.OK {
-		fmt.Fprintf(stdout, "OK   %-18s\n", "model")
-	} else {
+	if !printDoctorModel(stdout, res) {
 		failures++
-		fmt.Fprintf(stdout, "FAIL %-18s %s\n", "model", strings.Join(res.Errors, "; "))
 	}
 	fmt.Fprintf(stdout, "INFO %-18s %s/%s cgo=%s goroutines=%d\n", "go", runtime.GOOS, runtime.GOARCH, os.Getenv("CGO_ENABLED"), runtime.NumGoroutine())
 	if failures > 0 {
 		return exitcode.DependencyMissing
 	}
 	return exitcode.Success
+}
+
+func printDoctorModel(w io.Writer, res model.CheckResult) bool {
+	if res.OK {
+		fmt.Fprintf(w, "OK   %-18s\n", "model")
+	} else {
+		fmt.Fprintf(w, "FAIL %-18s %s\n", "model", strings.Join(res.Errors, "; "))
+	}
+	for _, warning := range res.Warnings {
+		fmt.Fprintf(w, "WARN %-18s %s\n", "model", warning)
+	}
+	return res.OK
 }
 
 func printStatus(w io.Writer, st api.Status) {
