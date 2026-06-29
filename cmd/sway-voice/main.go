@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -143,7 +144,7 @@ func sendCommand(args []string, stdout, stderr io.Writer, command string) int {
 	resp, err := control.Send(ctx, cfg.Daemon.Socket, control.NewRequest(command, reqArgs))
 	if err != nil {
 		fmt.Fprintf(stderr, "daemon unavailable: %v\n", err)
-		return exitcode.DaemonUnavailable
+		return exitForControlErr(err)
 	}
 	if command == "status" {
 		if *jsonOut {
@@ -157,6 +158,13 @@ func sendCommand(args []string, stdout, stderr io.Writer, command string) int {
 		return exitcode.ForErrorCode(resp.Error.Code)
 	}
 	return exitcode.Success
+}
+
+func exitForControlErr(err error) int {
+	if errors.Is(err, control.ErrSocketPermission) {
+		return exitcode.Permission
+	}
+	return exitcode.DaemonUnavailable
 }
 
 func runTranscribe(args []string, stdout, stderr io.Writer) int {

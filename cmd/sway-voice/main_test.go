@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -14,6 +15,7 @@ import (
 	"sway-voice/internal/asr"
 	"sway-voice/internal/audio"
 	"sway-voice/internal/config"
+	"sway-voice/internal/control"
 	"sway-voice/internal/exitcode"
 	"sway-voice/internal/inject"
 )
@@ -33,6 +35,16 @@ func TestStatusDaemonUnavailable(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("unexpected stdout: %s", out.String())
+	}
+}
+
+func TestControlSocketPermissionExit(t *testing.T) {
+	err := fmt.Errorf("%w: denied", control.ErrSocketPermission)
+	if got := exitForControlErr(err); got != exitcode.Permission {
+		t.Fatalf("exit = %d, want %d", got, exitcode.Permission)
+	}
+	if !errors.Is(err, control.ErrSocketPermission) {
+		t.Fatal("wrapped socket permission error did not match sentinel")
 	}
 }
 

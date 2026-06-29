@@ -18,6 +18,8 @@ type Handler interface {
 	HandleControl(context.Context, Request) Response
 }
 
+var ErrSocketPermission = errors.New("socket permission error")
+
 type Server struct {
 	socket  string
 	handler Handler
@@ -115,7 +117,7 @@ func checkSocketOwner(socket string) error {
 		return nil
 	}
 	if int(sys.Uid) != os.Getuid() {
-		return fmt.Errorf("socket %s is not owned by current user", socket)
+		return fmt.Errorf("%w: socket %s is not owned by current user", ErrSocketPermission, socket)
 	}
 	return nil
 }
