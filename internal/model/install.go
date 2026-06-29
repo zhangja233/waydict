@@ -73,8 +73,15 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	}
 	_ = os.RemoveAll(backup)
 	link := filepath.Join(base, "current")
-	_ = os.Remove(link)
-	_ = os.Symlink(final, link)
+	tmpLink := filepath.Join(base, ".current.new")
+	_ = os.Remove(tmpLink)
+	if err := os.Symlink(final, tmpLink); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpLink, link); err != nil {
+		_ = os.Remove(tmpLink)
+		return "", err
+	}
 	return final, nil
 }
 
