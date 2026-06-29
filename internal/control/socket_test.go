@@ -57,6 +57,39 @@ func TestServerReturnsProtocolError(t *testing.T) {
 	}
 }
 
+func TestPrepareSocketPathDoesNotChmodExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "sway-voice.sock")
+	if err := prepareSocketPath(socket); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode().Perm(); got != 0755 {
+		t.Fatalf("directory mode = %o, want 755", got)
+	}
+}
+
+func TestPrepareSocketPathCreatesPrivateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "new", "control")
+	socket := filepath.Join(dir, "sway-voice.sock")
+	if err := prepareSocketPath(socket); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode().Perm(); got != 0700 {
+		t.Fatalf("directory mode = %o, want 700", got)
+	}
+}
+
 func startTestServer(t *testing.T, handler Handler) (string, func()) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "control", "sway-voice.sock")

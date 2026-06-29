@@ -101,6 +101,16 @@ func Send(ctx context.Context, socket string, req Request) (Response, error) {
 
 func prepareSocketPath(socket string) error {
 	dir := filepath.Dir(socket)
+	st, err := os.Stat(dir)
+	if err == nil {
+		if !st.IsDir() {
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
