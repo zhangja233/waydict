@@ -113,7 +113,10 @@ func unpackTarBz2(path, dst string) error {
 		return err
 	}
 	defer f.Close()
-	tr := tar.NewReader(bzip2.NewReader(f))
+	return unpackTar(tar.NewReader(bzip2.NewReader(f)), dst)
+}
+
+func unpackTar(tr *tar.Reader, dst string) error {
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
