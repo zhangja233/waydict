@@ -3,6 +3,7 @@
 #include "pipewire_capture.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -119,6 +120,11 @@ int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out) {
     PW_KEY_MEDIA_CATEGORY, "Capture",
     PW_KEY_MEDIA_ROLE, "Communication",
     NULL);
+  if (config->quantum_frames > 0) {
+    char latency[64];
+    snprintf(latency, sizeof(latency), "%u/%u", config->quantum_frames, c->sample_rate);
+    pw_properties_set(props, PW_KEY_NODE_LATENCY, latency);
+  }
   if (config->target_object != NULL && config->target_object[0] != '\0') {
     pw_properties_set(props, PW_KEY_TARGET_OBJECT, config->target_object);
   }
