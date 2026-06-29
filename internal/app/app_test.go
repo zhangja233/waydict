@@ -345,6 +345,41 @@ func TestCaptureErrorResetsSegmenter(t *testing.T) {
 	}
 }
 
+func TestQueueSegmentDoesNotBlockWhenASRBackedUp(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &blockingEngine{started: make(chan struct{}, 1)}
+	app := New(ctx, cfg, Dependencies{
+		Engine:   engine,
+		Injector: &MemoryInjector{},
+	})
+	app.queueSegment(asr.AudioSegment{ID: "active", Duration: time.Second})
+	select {
+	case <-engine.started:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not start")
+	}
+	for i := 0; i < cap(app.asrQueue); i++ {
+		app.queueSegment(asr.AudioSegment{ID: "queued", Duration: time.Second})
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.queueSegment(asr.AudioSegment{ID: "overflow", Duration: time.Second})
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("queueSegment blocked on a full ASR queue")
+	}
+	st := app.Status(ctx)
+	if st.LastError == nil || st.LastError.Code != "recognition_failed" {
+		t.Fatalf("unexpected status error: %+v", st.LastError)
+	}
+}
+
 type resetTrackingSegmenter struct {
 	reset chan struct{}
 }
@@ -388,6 +423,20 @@ type recordingEngine struct {
 func (r *recordingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.Transcript, error) {
 	r.seen <- seg
 	return asr.Transcript{SegmentID: seg.ID, Empty: true}, nil
+}
+
+type blockingEngine struct {
+	FakeEngine
+	started chan struct{}
+}
+
+func (b *blockingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.Transcript, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return asr.Transcript{}, ctx.Err()
 }
 
 type overrunSource struct {

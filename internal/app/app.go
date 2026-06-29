@@ -362,6 +362,8 @@ func (a *App) queueSegment(seg asr.AudioSegment) {
 	select {
 	case a.asrQueue <- seg:
 	case <-a.rootCtx.Done():
+	default:
+		a.recordError(a.nextState(), "recognition_failed", fmt.Errorf("recognition queue full; dropped segment %s", seg.ID))
 	}
 }
 
