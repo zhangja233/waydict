@@ -29,12 +29,18 @@ func TestEnergySegmentBoundary(t *testing.T) {
 			t.Fatalf("unexpected segment: %v", segs)
 		}
 	}
+	if !s.SegmentOpen() {
+		t.Fatal("segment was not marked open during speech")
+	}
 	if segs := s.Feed(chunk(0), now); len(segs) != 0 {
 		t.Fatalf("unexpected segment before silence threshold: %v", segs)
 	}
 	segs := s.Feed(chunk(0), now)
 	if len(segs) != 1 {
 		t.Fatalf("segments = %d", len(segs))
+	}
+	if s.SegmentOpen() {
+		t.Fatal("segment remained open after boundary")
 	}
 	if segs[0].Duration <= 0 || len(segs[0].Samples) == 0 {
 		t.Fatalf("bad segment: %+v", segs[0])

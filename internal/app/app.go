@@ -56,6 +56,7 @@ type App struct {
 	currentSession uint64
 	discarded      map[uint64]struct{}
 	pendingASR     int
+	segmentOpen    bool
 }
 
 type segmentJob struct {
@@ -222,6 +223,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.mu.Lock()
 	a.sessionCancel = cancel
 	a.capturing = true
+	a.segmentOpen = false
 	a.lastActivity = time.Now()
 	a.status.State = api.StateListening
 	a.status.Audio.Capturing = true
@@ -239,6 +241,7 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	a.sessionCancel = nil
 	wasCapturing := a.capturing
 	a.capturing = false
+	a.segmentOpen = false
 	a.status.Audio.Capturing = false
 	if !commit {
 		a.discarded[session] = struct{}{}
@@ -368,6 +371,7 @@ func (a *App) captureLoop(ctx context.Context) {
 		for _, seg := range a.segmenter.Feed(buf[:n], now) {
 			a.queueSegment(seg)
 		}
+		a.updateSegmentState()
 	}
 }
 
@@ -638,9 +642,34 @@ func (a *App) nextState() api.State {
 		return api.StateRecognizing
 	}
 	if a.capturing {
+		if a.segmentOpen {
+			return api.StateSegmentOpen
+		}
 		return api.StateListening
 	}
 	return api.StateIdle
+}
+
+func (a *App) updateSegmentState() {
+	reporter, ok := a.segmenter.(interface{ SegmentOpen() bool })
+	if !ok {
+		return
+	}
+	open := reporter.SegmentOpen()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.segmentOpen = open
+	if !a.capturing {
+		return
+	}
+	switch a.status.State {
+	case api.StateListening, api.StateSegmentOpen:
+		if open {
+			a.status.State = api.StateSegmentOpen
+		} else {
+			a.status.State = api.StateListening
+		}
+	}
 }
 
 func (a *App) sessionDiscarded(session uint64) bool {
@@ -661,7 +690,11 @@ func (a *App) finishASRJob(session uint64) {
 		switch a.status.State {
 		case api.StateRecognizing, api.StateTyping:
 			if a.capturing {
-				a.status.State = api.StateListening
+				if a.segmentOpen {
+					a.status.State = api.StateSegmentOpen
+				} else {
+					a.status.State = api.StateListening
+				}
 			} else {
 				a.status.State = api.StateIdle
 				a.status.Mode = nil
@@ -676,6 +709,7 @@ func (a *App) setState(state api.State) {
 	a.status.State = state
 	if state == api.StateIdle {
 		a.status.Mode = nil
+		a.segmentOpen = false
 	}
 }
 
@@ -687,6 +721,7 @@ func (a *App) recordError(state api.State, code string, err error) {
 	if state == api.StateIdle || state == api.StateError {
 		a.status.Mode = nil
 		a.capturing = false
+		a.segmentOpen = false
 		a.status.Audio.Capturing = false
 	}
 }

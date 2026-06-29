@@ -92,6 +92,10 @@ func (s *EnergySegmenter) Flush(commit bool, now time.Time) []asr.AudioSegment {
 	return []asr.AudioSegment{seg}
 }
 
+func (s *EnergySegmenter) SegmentOpen() bool {
+	return s.open
+}
+
 func (s *EnergySegmenter) Reset() {
 	s.speechFrames = 0
 	s.silenceFrames = 0

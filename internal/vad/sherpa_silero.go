@@ -79,6 +79,10 @@ func (s *SileroSegmenter) Flush(commit bool, now time.Time) []asr.AudioSegment {
 	return nil
 }
 
+func (s *SileroSegmenter) SegmentOpen() bool {
+	return s.vad != nil && s.vad.IsSpeech()
+}
+
 func (s *SileroSegmenter) Reset() {
 	if s.vad != nil {
 		s.vad.Reset()

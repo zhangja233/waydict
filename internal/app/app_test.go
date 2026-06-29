@@ -50,6 +50,47 @@ func TestStateTransitionsStartStop(t *testing.T) {
 	}
 }
 
+func TestStatusReportsSegmentOpen(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.VAD.Engine = "energy"
+	cfg.VAD.Threshold = 0.01
+	cfg.VAD.MinSpeechMS = 20
+	cfg.VAD.MinSilenceMS = 1000
+	cfg.VAD.SpeechPadMS = 0
+	cfg.VAD.PreRollMS = 0
+	cfg.VAD.MaxSpeechSeconds = 3
+	speech := make([]float32, 320)
+	for i := range speech {
+		speech[i] = 0.1
+	}
+	src := &audio.ScriptedSource{
+		SampleRate: 16000,
+		Chunks:     [][]float32{speech, speech, speech},
+		Delay:      time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    src,
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{Text: "hello", IsLoaded: true},
+		Injector:  &MemoryInjector{},
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	defer app.Stop(ctx, false)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := app.Status(ctx).State; got == api.StateSegmentOpen {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("state did not become segment_open: %s", app.Status(ctx).State)
+}
+
 func TestSourceFactoryUsedOnStart(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
