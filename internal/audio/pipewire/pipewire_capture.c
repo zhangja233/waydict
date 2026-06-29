@@ -10,8 +10,11 @@
 #include <time.h>
 
 #include <pipewire/pipewire.h>
+#include <spa/buffer/buffer.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/props.h>
+#include <spa/pod/builder.h>
+#include <spa/utils/defs.h>
 
 struct sv_pw_capture {
   struct pw_thread_loop *loop;

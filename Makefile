@@ -19,9 +19,12 @@ test-sherpa:
 test-pipewire:
 	SWAY_VOICE_TEST_PIPEWIRE=1 $(GO_ENV) $(GO) test -tags pipewire ./internal/audio/pipewire
 
-test-model:
+test-model: build
 	$(GO_ENV) $(GO) test -tags sherpa ./internal/asr/sherpa
 	./$(BIN) model check
+	test -n "$$SWAY_VOICE_TEST_WAV"
+	test -n "$$(./$(BIN) transcribe --file "$$SWAY_VOICE_TEST_WAV")"
+	./$(BIN) bench --file "$$SWAY_VOICE_TEST_WAV"
 
 install: build
 	install -Dm755 $(BIN) $(BINDIR)/$(BIN)
