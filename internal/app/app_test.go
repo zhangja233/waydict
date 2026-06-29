@@ -535,6 +535,46 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 	t.Fatalf("focus change was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
 }
 
+func TestWtypeFailureRetentionFollowsRedaction(t *testing.T) {
+	tests := []struct {
+		name       string
+		redact     bool
+		wantStored string
+	}{
+		{name: "redacted", redact: true, wantStored: ""},
+		{name: "unredacted", redact: false, wantStored: "secret "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.ASR.NumThreads = 1
+			cfg.Daemon.RedactTranscriptsInLogs = tc.redact
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			app := New(ctx, cfg, Dependencies{
+				Engine:   &FakeEngine{Text: "secret", IsLoaded: true},
+				Injector: &MemoryInjector{Err: errors.New("wtype failed")},
+			})
+			app.queueSegment(asr.AudioSegment{ID: "seg", Duration: time.Second})
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				st := app.Status(ctx)
+				if st.LastError != nil {
+					if st.LastError.Code != "wtype_failed" {
+						t.Fatalf("error code = %s, want wtype_failed", st.LastError.Code)
+					}
+					if st.LastUninjectedText != tc.wantStored {
+						t.Fatalf("last uninjected text = %q, want %q", st.LastUninjectedText, tc.wantStored)
+					}
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatalf("wtype failure was not recorded: %+v", app.Status(ctx))
+		})
+	}
+}
+
 func TestCaptureOverrunMarksSegment(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
