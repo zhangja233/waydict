@@ -1,0 +1,90 @@
+package control
+
+import (
+	"context"
+	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"sway-voice/pkg/api"
+)
+
+type handlerFunc func(context.Context, Request) Response
+
+func (f handlerFunc) HandleControl(ctx context.Context, req Request) Response {
+	return f(ctx, req)
+}
+
+func TestServerSendRoundTrip(t *testing.T) {
+	socket, stop := startTestServer(t, handlerFunc(func(_ context.Context, req Request) Response {
+		return OK(req.ID, api.Status{State: api.StateIdle})
+	}))
+	defer stop()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req := NewRequest("status", nil)
+	resp, err := Send(ctx, socket, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.ID != req.ID || resp.Status.State != api.StateIdle {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestServerReturnsProtocolError(t *testing.T) {
+	socket, stop := startTestServer(t, handlerFunc(func(_ context.Context, req Request) Response {
+		return OK(req.ID, api.Status{State: api.StateIdle})
+	}))
+	defer stop()
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("{bad json}\n")); err != nil {
+		t.Fatal(err)
+	}
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.OK || resp.Error == nil || resp.Error.Code != "protocol_error" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func startTestServer(t *testing.T, handler Handler) (string, func()) {
+	t.Helper()
+	socket := filepath.Join(t.TempDir(), "control", "sway-voice.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewServer(socket, handler).Serve(ctx)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("server did not create socket")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return socket, func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("server exited with error: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("server did not stop")
+		}
+	}
+}
