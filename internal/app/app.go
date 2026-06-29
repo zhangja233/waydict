@@ -49,9 +49,11 @@ type App struct {
 	post           inject.PostProcessor
 
 	mu             sync.Mutex
+	segMu          sync.Mutex // serializes segmenter access (silero VAD is not concurrency-safe)
 	status         api.Status
 	startedAt      time.Time
 	sessionCancel  context.CancelFunc
+	captureDone    chan struct{}
 	capturing      bool
 	rootCtx        context.Context
 	asrQueue       chan segmentJob
@@ -232,8 +234,10 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 		return withCode("pipewire_unavailable", err)
 	}
 	sessionCtx, cancel := context.WithCancel(a.rootCtx)
+	captureDone := make(chan struct{})
 	a.mu.Lock()
 	a.sessionCancel = cancel
+	a.captureDone = captureDone
 	a.capturing = true
 	a.segmentOpen = false
 	a.lastActivity = time.Now()
@@ -241,7 +245,10 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.Audio.Capturing = true
 	a.status.ASR.Loaded = a.engine != nil && a.engine.Loaded()
 	a.mu.Unlock()
-	go a.captureLoop(sessionCtx)
+	go func() {
+		defer close(captureDone)
+		a.captureLoop(sessionCtx)
+	}()
 	go a.autoStopLoop(sessionCtx)
 	return nil
 }
@@ -249,8 +256,10 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 func (a *App) Stop(ctx context.Context, commit bool) error {
 	a.mu.Lock()
 	cancel := a.sessionCancel
+	captureDone := a.captureDone
 	session := a.currentSession
 	a.sessionCancel = nil
+	a.captureDone = nil
 	wasCapturing := a.capturing
 	a.capturing = false
 	a.segmentOpen = false
@@ -271,8 +280,18 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 			return withCode("pipewire_unavailable", err)
 		}
 	}
+	// Wait for captureLoop to finish before flushing: the segmenter is not safe
+	// for concurrent use, and a racing Feed vs Flush corrupts the silero VAD's
+	// C heap (SIGABRT). This also guarantees no stale loop survives into a
+	// subsequent Start.
+	if captureDone != nil {
+		<-captureDone
+	}
 	if a.segmenter != nil {
-		for _, seg := range a.segmenter.Flush(commit, time.Now()) {
+		a.segMu.Lock()
+		flushed := a.segmenter.Flush(commit, time.Now())
+		a.segMu.Unlock()
+		for _, seg := range flushed {
 			a.queueSegment(seg)
 		}
 	}
@@ -415,9 +434,23 @@ func (a *App) captureLoop(ctx context.Context) {
 	}
 	var prevOverruns uint64
 	for {
+		// pipewire Read returns (0, nil) on a paused source, so the loop must
+		// check cancellation itself; otherwise it spins forever after Stop and
+		// a later Start races a second captureLoop on the shared segmenter.
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		a.mu.Lock()
 		src := a.source
+		capturing := a.capturing
 		a.mu.Unlock()
+		if !capturing {
+			// Stop cleared this; exit even if an interleaved Start left the
+			// context live, so no orphan loop touches the segmenter.
+			return
+		}
 		if src == nil {
 			a.recordError(api.StateIdle, "pipewire_unavailable", audio.ErrUnavailable)
 			return
@@ -426,7 +459,9 @@ func (a *App) captureLoop(ctx context.Context) {
 		if err != nil {
 			if ctx.Err() == nil {
 				if a.segmenter != nil {
+					a.segMu.Lock()
 					a.segmenter.Reset()
+					a.segMu.Unlock()
 				}
 				a.recordError(api.StateIdle, classify(err), err)
 				a.scheduleAudioRetry()
@@ -439,7 +474,9 @@ func (a *App) captureLoop(ctx context.Context) {
 		if stats := src.Stats(); stats.Overruns > prevOverruns {
 			prevOverruns = stats.Overruns
 			if marker, ok := a.segmenter.(interface{ MarkCaptureOverrun() }); ok {
+				a.segMu.Lock()
 				marker.MarkCaptureOverrun()
+				a.segMu.Unlock()
 			}
 		}
 		now := time.Now()
@@ -449,7 +486,10 @@ func (a *App) captureLoop(ctx context.Context) {
 		if a.segmenter == nil {
 			continue
 		}
-		for _, seg := range a.segmenter.Feed(buf[:n], now) {
+		a.segMu.Lock()
+		segs := a.segmenter.Feed(buf[:n], now)
+		a.segMu.Unlock()
+		for _, seg := range segs {
 			a.queueSegment(seg)
 		}
 		a.updateSegmentState()
@@ -742,7 +782,9 @@ func (a *App) updateSegmentState() {
 	if !ok {
 		return
 	}
+	a.segMu.Lock()
 	open := reporter.SegmentOpen()
+	a.segMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.segmentOpen = open
