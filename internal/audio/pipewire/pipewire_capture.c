@@ -13,6 +13,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/buffer/buffer.h>
 #include <spa/param/audio/format-utils.h>
+#include <spa/param/audio/raw-utils.h>
 #include <spa/param/props.h>
 #include <spa/pod/builder.h>
 #include <spa/utils/defs.h>
@@ -26,7 +27,7 @@ struct sv_pw_capture {
   float *ring;
   uint32_t capacity;
   uint32_t sample_rate;
-  uint32_t channels;
+  atomic_uint channels;
   atomic_uint_fast64_t read_count;
   atomic_uint_fast64_t write_count;
   atomic_uint_fast64_t overruns;
@@ -47,6 +48,11 @@ static void ring_write(struct sv_pw_capture *c, const float *src, uint32_t n) {
   }
 }
 
+static void ring_flush(struct sv_pw_capture *c) {
+  uint64_t w = atomic_load_explicit(&c->write_count, memory_order_acquire);
+  atomic_store_explicit(&c->read_count, w, memory_order_release);
+}
+
 static void update_level(struct sv_pw_capture *c, const float *src, uint32_t n) {
   if (n == 0) {
     atomic_store_explicit(&c->level_mdb, -120000, memory_order_relaxed);
@@ -63,6 +69,37 @@ static void update_level(struct sv_pw_capture *c, const float *src, uint32_t n) 
   atomic_store_explicit(&c->level_mdb, (int)(db * 1000.0), memory_order_relaxed);
 }
 
+static float mono_frame(const float *src, uint32_t channels) {
+  double sum = 0.0;
+  for (uint32_t i = 0; i < channels; i++) {
+    sum += src[i];
+  }
+  return (float)(sum / (double)channels);
+}
+
+static void ring_write_interleaved(struct sv_pw_capture *c, const float *src, uint32_t frames, uint32_t channels) {
+  for (uint32_t frame = 0; frame < frames; frame++) {
+    float mono = mono_frame(src + frame * channels, channels);
+    ring_write(c, &mono, 1);
+  }
+}
+
+static void update_level_interleaved(struct sv_pw_capture *c, const float *src, uint32_t frames, uint32_t channels) {
+  if (frames == 0) {
+    atomic_store_explicit(&c->level_mdb, -120000, memory_order_relaxed);
+    return;
+  }
+  double sum = 0.0;
+  for (uint32_t frame = 0; frame < frames; frame++) {
+    double v = mono_frame(src + frame * channels, channels);
+    sum += v * v;
+  }
+  double rms = sqrt(sum / (double)frames);
+  double db = rms > 0.0 ? 20.0 * log10(rms) : -120.0;
+  if (db < -120.0) db = -120.0;
+  atomic_store_explicit(&c->level_mdb, (int)(db * 1000.0), memory_order_relaxed);
+}
+
 static void on_process(void *data) {
   struct sv_pw_capture *c = data;
   struct pw_buffer *b = pw_stream_dequeue_buffer(c->stream);
@@ -72,12 +109,37 @@ static void on_process(void *data) {
     struct spa_data *d = &buf->datas[0];
     if (d->data != NULL && d->chunk != NULL && d->chunk->size > 0) {
       uint8_t *bytes = SPA_MEMBER(d->data, d->chunk->offset, uint8_t);
-      uint32_t frames = d->chunk->size / sizeof(float);
-      ring_write(c, (const float *)bytes, frames);
-      update_level(c, (const float *)bytes, frames);
+      const float *samples = (const float *)bytes;
+      uint32_t sample_count = d->chunk->size / sizeof(float);
+      uint32_t channels = atomic_load_explicit(&c->channels, memory_order_relaxed);
+      if (channels <= 1) {
+        ring_write(c, samples, sample_count);
+        update_level(c, samples, sample_count);
+      } else {
+        uint32_t frames = sample_count / channels;
+        ring_write_interleaved(c, samples, frames, channels);
+        update_level_interleaved(c, samples, frames, channels);
+      }
     }
   }
   pw_stream_queue_buffer(c->stream, b);
+}
+
+static void on_param_changed(void *data, uint32_t id, const struct spa_pod *param) {
+  struct sv_pw_capture *c = data;
+  uint32_t media_type = 0;
+  uint32_t media_subtype = 0;
+  struct spa_audio_info_raw info = {0};
+  if (param == NULL || id != SPA_PARAM_Format) return;
+  if (spa_format_parse(param, &media_type, &media_subtype) < 0) return;
+  if (media_type != SPA_MEDIA_TYPE_audio || media_subtype != SPA_MEDIA_SUBTYPE_raw) return;
+  if (spa_format_audio_raw_parse(param, &info) < 0) return;
+  if (info.channels > 0) {
+    atomic_store_explicit(&c->channels, info.channels, memory_order_relaxed);
+  }
+  if (info.rate > 0) {
+    c->sample_rate = info.rate;
+  }
 }
 
 static void on_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state, const char *error) {
@@ -89,6 +151,7 @@ static void on_state_changed(void *data, enum pw_stream_state old, enum pw_strea
 
 static const struct pw_stream_events stream_events = {
   PW_VERSION_STREAM_EVENTS,
+  .param_changed = on_param_changed,
   .state_changed = on_state_changed,
   .process = on_process,
 };
@@ -100,7 +163,7 @@ int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out) {
   struct sv_pw_capture *c = calloc(1, sizeof(*c));
   if (c == NULL) return -2;
   c->sample_rate = config->sample_rate ? config->sample_rate : 16000;
-  c->channels = config->channels ? config->channels : 1;
+  atomic_store(&c->channels, config->channels ? config->channels : 1);
   c->capacity = config->ring_frames ? config->ring_frames : c->sample_rate * 8;
   c->ring = calloc(c->capacity, sizeof(float));
   if (c->ring == NULL) {
@@ -138,7 +201,8 @@ int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out) {
   struct spa_audio_info_raw info = {
     .format = SPA_AUDIO_FORMAT_F32_LE,
     .rate = c->sample_rate,
-    .channels = c->channels,
+    .channels = config->channels ? config->channels : 1,
+    .position = { SPA_AUDIO_CHANNEL_MONO },
   };
   params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
   int rc = pw_stream_connect(c->stream,
@@ -166,6 +230,7 @@ fail:
 int sv_pw_capture_start(sv_pw_capture *capture) {
   if (capture == NULL || capture->stream == NULL) return -1;
   pw_thread_loop_lock(capture->loop);
+  ring_flush(capture);
   int rc = pw_stream_set_active(capture->stream, true);
   pw_thread_loop_unlock(capture->loop);
   return rc;
@@ -175,6 +240,7 @@ int sv_pw_capture_pause(sv_pw_capture *capture) {
   if (capture == NULL || capture->stream == NULL) return -1;
   pw_thread_loop_lock(capture->loop);
   int rc = pw_stream_set_active(capture->stream, false);
+  ring_flush(capture);
   pw_thread_loop_unlock(capture->loop);
   atomic_store(&capture->capturing, 0);
   return rc;
