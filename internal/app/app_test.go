@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -248,6 +249,45 @@ func TestStopCommitAllowsPendingInjection(t *testing.T) {
 	}
 	if got := app.Status(ctx).State; got != api.StateIdle {
 		t.Fatalf("state = %s, want idle", got)
+	}
+}
+
+func TestStopDiscardSuppressesPendingASRError(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &gateEngine{
+		err:     fmt.Errorf("decode failed"),
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	app := New(ctx, cfg, Dependencies{
+		Engine:   engine,
+		Injector: &MemoryInjector{},
+	})
+	app.queueSegment(asr.AudioSegment{ID: "pending", Duration: time.Second})
+	select {
+	case <-engine.started:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not start")
+	}
+	if err := app.Stop(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	close(engine.release)
+	select {
+	case <-engine.done:
+	case <-time.After(time.Second):
+		t.Fatal("ASR worker did not finish")
+	}
+	st := app.Status(ctx)
+	if st.LastError != nil {
+		t.Fatalf("discarded ASR error leaked into status: %+v", st.LastError)
+	}
+	if st.State != api.StateIdle {
+		t.Fatalf("state = %s, want idle", st.State)
 	}
 }
 
@@ -575,6 +615,7 @@ func (b *blockingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (
 type gateEngine struct {
 	FakeEngine
 	text    string
+	err     error
 	started chan struct{}
 	release chan struct{}
 	done    chan struct{}
@@ -592,6 +633,9 @@ func (g *gateEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.
 		return asr.Transcript{}, ctx.Err()
 	}
 	close(g.done)
+	if g.err != nil {
+		return asr.Transcript{}, g.err
+	}
 	return asr.Transcript{
 		SegmentID:     seg.ID,
 		Text:          g.text,

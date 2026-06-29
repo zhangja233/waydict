@@ -529,6 +529,10 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	tr, err := a.engine.Transcribe(tctx, seg)
 	cancel()
 	if err != nil {
+		if a.sessionDiscarded(job.session) {
+			a.setState(a.nextState())
+			return
+		}
 		a.recordError(a.nextState(), "recognition_failed", err)
 		return
 	}
