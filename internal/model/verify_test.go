@@ -29,6 +29,28 @@ func TestCheckDirRejectsUnreadableRequiredFile(t *testing.T) {
 	}
 }
 
+func TestCheckDirRejectsUnsafeChecksumPath(t *testing.T) {
+	dir := writeTinyModel(t)
+	if err := os.WriteFile(filepath.Join(dir, DefaultChecksumFile), []byte("abcd  ../outside\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := CheckDir(dir, CheckOptions{})
+	if res.OK {
+		t.Fatalf("check unexpectedly passed: %+v", res)
+	}
+}
+
+func TestCheckDirRejectsAbsoluteChecksumPath(t *testing.T) {
+	dir := writeTinyModel(t)
+	if err := os.WriteFile(filepath.Join(dir, DefaultChecksumFile), []byte("abcd  /tmp/outside\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := CheckDir(dir, CheckOptions{})
+	if res.OK {
+		t.Fatalf("check unexpectedly passed: %+v", res)
+	}
+}
+
 func writeTinyModel(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

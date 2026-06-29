@@ -124,6 +124,9 @@ func verifyChecksums(dir string) error {
 		}
 		want := strings.ToLower(fields[0])
 		name := strings.TrimPrefix(fields[1], "*")
+		if err := validateChecksumName(name); err != nil {
+			return err
+		}
 		got, err := fileSHA256(filepath.Join(dir, name))
 		if err != nil {
 			return err
@@ -133,6 +136,14 @@ func verifyChecksums(dir string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+func validateChecksumName(name string) error {
+	clean := filepath.Clean(name)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("unsafe checksum path %q", name)
+	}
+	return nil
 }
 
 func fileSHA256(path string) (string, error) {
