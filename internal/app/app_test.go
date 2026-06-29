@@ -37,6 +37,55 @@ func TestStateTransitionsStartStop(t *testing.T) {
 	}
 }
 
+func TestSourceFactoryUsedOnStart(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	called := false
+	app := New(ctx, cfg, Dependencies{
+		SourceFactory: func() (audio.Source, error) {
+			called = true
+			return &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond}, nil
+		},
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{Text: "hello"},
+		Injector:  &MemoryInjector{},
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("source factory was not called")
+	}
+	_ = app.Stop(ctx, false)
+}
+
+func TestAutoStopAfterSilence(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.Daemon.AutoStopAfterSilenceSeconds = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    &audio.ScriptedSource{SampleRate: 16000, Delay: 10 * time.Millisecond},
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    &FakeEngine{Text: "hello"},
+		Injector:  &MemoryInjector{},
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if app.Status(ctx).State == api.StateIdle {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("state did not return to idle: %s", app.Status(ctx).State)
+}
+
 func TestFakeASRToInjection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1

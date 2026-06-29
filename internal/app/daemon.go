@@ -6,10 +6,12 @@ import (
 	"time"
 
 	sherpaasr "sway-voice/internal/asr/sherpa"
+	"sway-voice/internal/audio"
 	"sway-voice/internal/audio/pipewire"
 	"sway-voice/internal/config"
 	"sway-voice/internal/control"
 	"sway-voice/internal/inject"
+	"sway-voice/internal/model"
 	"sway-voice/internal/swayipc"
 	"sway-voice/internal/vad"
 )
@@ -21,8 +23,9 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	if cfg.Daemon.PreloadModel {
-		if err := cfg.ValidateModelReadable(); err != nil {
-			return fmt.Errorf("model validation failed: %w", err)
+		res := model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
+		if !res.OK {
+			return fmt.Errorf("model validation failed: %v", res.Errors)
 		}
 	}
 	focus := swayipc.New(cfg.Sway.Socket)
@@ -34,10 +37,6 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 			return fmt.Errorf("sway unavailable: %w", err)
 		}
 	}
-	capture, err := pipewire.New(cfg.Audio)
-	if err != nil {
-		return err
-	}
 	engine := sherpaasr.New(cfg.ASR)
 	if cfg.Daemon.PreloadModel {
 		if err := engine.Load(ctx); err != nil {
@@ -45,7 +44,9 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 		}
 	}
 	application := New(ctx, cfg, Dependencies{
-		Source:    capture,
+		SourceFactory: func() (audio.Source, error) {
+			return pipewire.New(cfg.Audio)
+		},
 		Segmenter: vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
 		Engine:    engine,
 		Injector:  inject.NewWtype(cfg.Injection),

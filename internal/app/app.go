@@ -19,23 +19,25 @@ import (
 )
 
 type Dependencies struct {
-	Source    audio.Source
-	Segmenter vad.Segmenter
-	Engine    asr.Engine
-	Injector  inject.Injector
-	Focus     *swayipc.Client
-	Shutdown  func()
+	Source        audio.Source
+	SourceFactory func() (audio.Source, error)
+	Segmenter     vad.Segmenter
+	Engine        asr.Engine
+	Injector      inject.Injector
+	Focus         *swayipc.Client
+	Shutdown      func()
 }
 
 type App struct {
-	cfg       config.Config
-	source    audio.Source
-	segmenter vad.Segmenter
-	engine    asr.Engine
-	injector  inject.Injector
-	guard     *swayipc.Guard
-	focus     *swayipc.Client
-	post      inject.PostProcessor
+	cfg           config.Config
+	source        audio.Source
+	sourceFactory func() (audio.Source, error)
+	segmenter     vad.Segmenter
+	engine        asr.Engine
+	injector      inject.Injector
+	guard         *swayipc.Guard
+	focus         *swayipc.Client
+	post          inject.PostProcessor
 
 	mu            sync.Mutex
 	status        api.Status
@@ -45,21 +47,24 @@ type App struct {
 	rootCtx       context.Context
 	asrQueue      chan asr.AudioSegment
 	shutdown      func()
+	lastActivity  time.Time
+	retryingAudio bool
 }
 
 func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 	a := &App{
-		cfg:       cfg,
-		source:    deps.Source,
-		segmenter: deps.Segmenter,
-		engine:    deps.Engine,
-		injector:  deps.Injector,
-		focus:     deps.Focus,
-		post:      inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
-		startedAt: time.Now(),
-		rootCtx:   ctx,
-		asrQueue:  make(chan asr.AudioSegment, 8),
-		shutdown:  deps.Shutdown,
+		cfg:           cfg,
+		source:        deps.Source,
+		sourceFactory: deps.SourceFactory,
+		segmenter:     deps.Segmenter,
+		engine:        deps.Engine,
+		injector:      deps.Injector,
+		focus:         deps.Focus,
+		post:          inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
+		startedAt:     time.Now(),
+		rootCtx:       ctx,
+		asrQueue:      make(chan asr.AudioSegment, 8),
+		shutdown:      deps.Shutdown,
 	}
 	if deps.Focus != nil {
 		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
@@ -164,12 +169,24 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 		}
 		a.recordFocus(a.guard.StartedFocus())
 	}
-	if a.source == nil {
+	a.mu.Lock()
+	src := a.source
+	a.mu.Unlock()
+	if src == nil {
+		if err := a.recreateSource(ctx); err != nil {
+			a.recordError(api.StateIdle, "pipewire_unavailable", err)
+			return err
+		}
+	}
+	a.mu.Lock()
+	src = a.source
+	a.mu.Unlock()
+	if src == nil {
 		err := audio.ErrUnavailable
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
 		return err
 	}
-	if err := a.source.Start(ctx); err != nil {
+	if err := src.Start(ctx); err != nil {
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
 		return err
 	}
@@ -177,11 +194,13 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.mu.Lock()
 	a.sessionCancel = cancel
 	a.capturing = true
+	a.lastActivity = time.Now()
 	a.status.State = api.StateListening
 	a.status.Audio.Capturing = true
 	a.status.ASR.Loaded = a.engine != nil && a.engine.Loaded()
 	a.mu.Unlock()
 	go a.captureLoop(sessionCtx)
+	go a.autoStopLoop(sessionCtx)
 	return nil
 }
 
@@ -196,8 +215,11 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	if cancel != nil {
 		cancel()
 	}
-	if a.source != nil && wasCapturing {
-		if err := a.source.Pause(ctx); err != nil {
+	a.mu.Lock()
+	src := a.source
+	a.mu.Unlock()
+	if src != nil && wasCapturing {
+		if err := src.Pause(ctx); err != nil {
 			a.recordError(api.StateIdle, classify(err), err)
 			return err
 		}
@@ -265,10 +287,18 @@ func (a *App) captureLoop(ctx context.Context) {
 		buf = make([]float32, 320)
 	}
 	for {
-		n, err := a.source.Read(ctx, buf)
+		a.mu.Lock()
+		src := a.source
+		a.mu.Unlock()
+		if src == nil {
+			a.recordError(api.StateIdle, "pipewire_unavailable", audio.ErrUnavailable)
+			return
+		}
+		n, err := src.Read(ctx, buf)
 		if err != nil {
 			if ctx.Err() == nil {
 				a.recordError(api.StateIdle, classify(err), err)
+				a.scheduleAudioRetry()
 			}
 			return
 		}
@@ -276,6 +306,9 @@ func (a *App) captureLoop(ctx context.Context) {
 			continue
 		}
 		now := time.Now()
+		if audio.LevelDBFS(buf[:n]) > -45 {
+			a.touchActivity(now)
+		}
 		if a.segmenter == nil {
 			continue
 		}
@@ -288,10 +321,110 @@ func (a *App) captureLoop(ctx context.Context) {
 func (a *App) queueSegment(seg asr.AudioSegment) {
 	a.mu.Lock()
 	a.status.State = api.StateRecognizing
+	a.lastActivity = time.Now()
 	a.mu.Unlock()
 	select {
 	case a.asrQueue <- seg:
 	case <-a.rootCtx.Done():
+	}
+}
+
+func (a *App) autoStopLoop(ctx context.Context) {
+	timeout := time.Duration(a.cfg.Daemon.AutoStopAfterSilenceSeconds) * time.Second
+	if timeout <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.mu.Lock()
+			idleFor := time.Since(a.lastActivity)
+			capturing := a.capturing
+			a.mu.Unlock()
+			if capturing && idleFor >= timeout {
+				_ = a.Stop(context.Background(), true)
+				return
+			}
+		}
+	}
+}
+
+func (a *App) touchActivity(now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastActivity = now
+}
+
+func (a *App) recreateSource(ctx context.Context) error {
+	if a.sourceFactory == nil {
+		return audio.ErrUnavailable
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	src, err := a.sourceFactory()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	old := a.source
+	a.source = src
+	a.status.Audio.Capturing = false
+	a.status.Audio.SampleRate = src.Stats().SampleRate
+	a.mu.Unlock()
+	closeSource(old)
+	return nil
+}
+
+func (a *App) scheduleAudioRetry() {
+	a.mu.Lock()
+	if a.retryingAudio || a.sourceFactory == nil {
+		a.mu.Unlock()
+		return
+	}
+	a.retryingAudio = true
+	a.mu.Unlock()
+	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.retryingAudio = false
+			a.mu.Unlock()
+		}()
+		backoff := time.Second
+		for {
+			select {
+			case <-a.rootCtx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			a.mu.Lock()
+			capturing := a.capturing
+			a.mu.Unlock()
+			if capturing {
+				return
+			}
+			if err := a.recreateSource(a.rootCtx); err == nil {
+				a.mu.Lock()
+				a.status.LastError = nil
+				a.mu.Unlock()
+				return
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+	}()
+}
+
+func closeSource(src audio.Source) {
+	if closer, ok := src.(interface{ Close() }); ok {
+		closer.Close()
 	}
 }
 
