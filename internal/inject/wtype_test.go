@@ -12,12 +12,14 @@ import (
 func TestWtypeUsesStdin(t *testing.T) {
 	tmp := t.TempDir()
 	out := filepath.Join(tmp, "typed.txt")
+	args := filepath.Join(tmp, "args.txt")
 	fake := filepath.Join(tmp, "fake-wtype")
-	script := "#!/bin/sh\ncat > \"$SVIP_WTYPE_OUT\"\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SVIP_WTYPE_ARGS\"\ncat > \"$SVIP_WTYPE_OUT\"\n"
 	if err := os.WriteFile(fake, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SVIP_WTYPE_OUT", out)
+	t.Setenv("SVIP_WTYPE_ARGS", args)
 	cfg := config.Defaults().Injection
 	cfg.WtypePath = fake
 	w := NewWtype(cfg)
@@ -30,6 +32,13 @@ func TestWtypeUsesStdin(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("stdin = %q", data)
+	}
+	data, err = os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "-d\n1\n-\n" {
+		t.Fatalf("argv = %q", data)
 	}
 }
 
