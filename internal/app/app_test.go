@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"sway-voice/internal/asr"
 	"sway-voice/internal/audio"
 	"sway-voice/internal/config"
 	"sway-voice/internal/swayipc"
@@ -202,6 +203,106 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("focus change was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
+}
+
+func TestCaptureOverrunMarksSegment(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	cfg.VAD.Engine = "energy"
+	cfg.VAD.Threshold = 0.01
+	cfg.VAD.MinSpeechMS = 20
+	cfg.VAD.MinSilenceMS = 20
+	cfg.VAD.SpeechPadMS = 0
+	cfg.VAD.PreRollMS = 0
+	cfg.VAD.MaxSpeechSeconds = 3
+	chunk := func(v float32) []float32 {
+		out := make([]float32, 160)
+		for i := range out {
+			out[i] = v
+		}
+		return out
+	}
+	src := &overrunSource{sampleRate: 16000}
+	for i := 0; i < 35; i++ {
+		src.chunks = append(src.chunks, chunk(0.1))
+	}
+	for i := 0; i < 5; i++ {
+		src.chunks = append(src.chunks, chunk(0))
+	}
+	engine := &recordingEngine{seen: make(chan asr.AudioSegment, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:    src,
+		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:    engine,
+		Injector:  &MemoryInjector{},
+	})
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case seg := <-engine.seen:
+		if !seg.CaptureOverrun || !seg.Degraded {
+			t.Fatalf("segment overrun flags were not set: %+v", seg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ASR did not receive a segment")
+	}
+}
+
+type recordingEngine struct {
+	FakeEngine
+	seen chan asr.AudioSegment
+}
+
+func (r *recordingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.Transcript, error) {
+	r.seen <- seg
+	return asr.Transcript{SegmentID: seg.ID, Empty: true}, nil
+}
+
+type overrunSource struct {
+	chunks     [][]float32
+	sampleRate int
+	capturing  bool
+	index      int
+}
+
+func (s *overrunSource) Start(context.Context) error {
+	s.capturing = true
+	return nil
+}
+
+func (s *overrunSource) Pause(context.Context) error {
+	s.capturing = false
+	return nil
+}
+
+func (s *overrunSource) Stop(context.Context) error {
+	s.capturing = false
+	return nil
+}
+
+func (s *overrunSource) Read(ctx context.Context, dst []float32) (int, error) {
+	if !s.capturing || s.index >= len(s.chunks) {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(time.Millisecond):
+			return 0, nil
+		}
+	}
+	chunk := s.chunks[s.index]
+	s.index++
+	return copy(dst, chunk), nil
+}
+
+func (s *overrunSource) Stats() audio.Stats {
+	overruns := uint64(0)
+	if s.index > 0 {
+		overruns = 1
+	}
+	return audio.Stats{SampleRate: s.sampleRate, Capturing: s.capturing, Overruns: overruns}
 }
 
 func startFakeSway(t *testing.T, trees ...string) string {

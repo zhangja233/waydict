@@ -300,6 +300,7 @@ func (a *App) captureLoop(ctx context.Context) {
 	if len(buf) == 0 {
 		buf = make([]float32, 320)
 	}
+	var prevOverruns uint64
 	for {
 		a.mu.Lock()
 		src := a.source
@@ -318,6 +319,12 @@ func (a *App) captureLoop(ctx context.Context) {
 		}
 		if n == 0 {
 			continue
+		}
+		if stats := src.Stats(); stats.Overruns > prevOverruns {
+			prevOverruns = stats.Overruns
+			if marker, ok := a.segmenter.(interface{ MarkCaptureOverrun() }); ok {
+				marker.MarkCaptureOverrun()
+			}
 		}
 		now := time.Now()
 		if audio.LevelDBFS(buf[:n]) > -45 {

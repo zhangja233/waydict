@@ -18,6 +18,7 @@ type SileroSegmenter struct {
 	vad        *onnx.VoiceActivityDetector
 	baseTime   time.Time
 	nextID     int
+	degraded   bool
 }
 
 func NewSegmenter(cfg config.VAD, sampleRate int) Segmenter {
@@ -83,6 +84,11 @@ func (s *SileroSegmenter) Reset() {
 		s.vad.Reset()
 	}
 	s.baseTime = time.Time{}
+	s.degraded = false
+}
+
+func (s *SileroSegmenter) MarkCaptureOverrun() {
+	s.degraded = true
 }
 
 func (s *SileroSegmenter) collect(degraded bool) []asr.AudioSegment {
@@ -98,13 +104,15 @@ func (s *SileroSegmenter) collect(degraded bool) []asr.AudioSegment {
 		}
 		samples := append([]float32(nil), front.Samples...)
 		out = append(out, asr.AudioSegment{
-			ID:         id,
-			Samples:    samples,
-			SampleRate: s.sampleRate,
-			StartedAt:  started,
-			Duration:   durationForFrames(s.sampleRate, len(samples)),
-			Degraded:   degraded,
+			ID:             id,
+			Samples:        samples,
+			SampleRate:     s.sampleRate,
+			StartedAt:      started,
+			Duration:       durationForFrames(s.sampleRate, len(samples)),
+			Degraded:       degraded || s.degraded,
+			CaptureOverrun: s.degraded,
 		})
+		s.degraded = false
 	}
 	return out
 }
