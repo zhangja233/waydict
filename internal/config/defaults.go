@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DefaultModelName = "parakeet-tdt-0.6b-v3-int8"
+	DefaultModelName = "parakeet-unified-en-0.6b-fp32"
 )
 
 func DefaultPath() string {
@@ -64,9 +64,9 @@ func Defaults() Config {
 			MaxActivePaths: 4,
 			BlankPenalty:   0,
 			ModelDir:       filepath.Join(modelRoot, DefaultModelName),
-			Encoder:        "encoder.int8.onnx",
-			Decoder:        "decoder.int8.onnx",
-			Joiner:         "joiner.int8.onnx",
+			Encoder:        "encoder.onnx",
+			Decoder:        "decoder.onnx",
+			Joiner:         "joiner.onnx",
 			Tokens:         "tokens.txt",
 		},
 		Injection: Injection{

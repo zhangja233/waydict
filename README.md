@@ -2,7 +2,7 @@
 
 Local voice dictation for wlroots Wayland compositors. A daemon owns the microphone and the speech model; the CLI sends `start`/`stop`/`toggle`/`status` over a per-user Unix socket, and recognized text is typed into the focused window with `wtype`. Everything runs locally on CPU — no network.
 
-Pipeline: PipeWire capture → silero VAD → Parakeet-TDT ASR (sherpa-onnx) → `wtype`.
+Pipeline: PipeWire capture → silero VAD → Parakeet Unified ASR (sherpa-onnx) → `wtype`.
 
 ## Dependencies
 
@@ -33,7 +33,7 @@ install -Dm755 waydict ~/.local/bin/waydict
 # the daemon falls back to a cruder energy VAD and the silero-scaled [vad]
 # thresholds are misread as linear RMS.
 waydict model install all                # both; or install individually:
-#   waydict model install parakeet-v3-int8
+#   waydict model install parakeet-unified-en-0.6b-fp32
 #   waydict model install silero-vad
 
 # optional config (sane defaults otherwise)
@@ -65,7 +65,7 @@ waydict toggle
 waydict status [--json]
 waydict transcribe --file PATH [--inject]
 waydict model   check [--config PATH] [--dir PATH]
-waydict model   install <parakeet-v3-int8|silero-vad|all> [--dir PATH]
+waydict model   install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|all> [--dir PATH]
 waydict bench   --file PATH [--repeat N]
 waydict doctor
 ```

@@ -76,7 +76,7 @@ func usage(w io.Writer) {
   waydict status [--json]
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
-  waydict model install <parakeet-v3-int8|silero-vad|all> [--dir PATH]
+  waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|all> [--dir PATH]
   waydict bench --file PATH [--repeat N]
   waydict doctor`)
 }
@@ -346,13 +346,13 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitcode.Success
 	case "install":
-		const installUsage = "usage: waydict model install <parakeet-v3-int8|silero-vad|all> [--dir PATH]"
+		const installUsage = "usage: waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|all> [--dir PATH]"
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, installUsage)
 			return exitcode.Usage
 		}
 		name := args[1]
-		if name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" {
+		if name != model.ParakeetUnifiedFP32ID && name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" {
 			fmt.Fprintln(stderr, installUsage)
 			return exitcode.Usage
 		}
@@ -369,6 +369,8 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 				err  error
 			)
 			switch kind {
+			case model.ParakeetUnifiedFP32ID:
+				path, err = modelinstall.InstallParakeetUnifiedFP32(ctx, modelinstall.InstallOptions{Dir: *dir})
 			case "parakeet-v3-int8":
 				path, err = modelinstall.InstallParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
 			case "silero-vad":
@@ -383,7 +385,7 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		}
 		ok := true
 		if name == "all" {
-			ok = install("parakeet-v3-int8") && ok
+			ok = install(model.ParakeetUnifiedFP32ID) && ok
 			ok = install("silero-vad") && ok
 		} else {
 			ok = install(name)

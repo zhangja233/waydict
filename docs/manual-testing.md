@@ -13,11 +13,11 @@ Expected: the build succeeds on a machine with `pkg-config`, `libpipewire-0.3` d
 ## Model
 
 ```sh
-./waydict model install parakeet-v3-int8
+./waydict model install parakeet-unified-en-0.6b-fp32
 ./waydict model check
 ```
 
-Expected: all required model files pass size/readability checks. If the model was installed manually, set `[asr].model_dir` to the directory containing `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt`.
+Expected: all required model files pass size/readability checks. If the model was installed manually, set `[asr].model_dir` to the directory containing `encoder.onnx`, `encoder.weights`, `decoder.onnx`, `joiner.onnx`, and `tokens.txt`.
 
 ## Diagnostics
 

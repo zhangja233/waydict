@@ -21,14 +21,53 @@ type InstallOptions struct {
 	URL string
 }
 
+func InstallParakeetUnifiedFP32(ctx context.Context, opts InstallOptions) (string, error) {
+	base, err := modelRoot(opts.Dir)
+	if err != nil {
+		return "", err
+	}
+	sourceBase := opts.URL
+	if sourceBase == "" {
+		sourceBase = model.ParakeetUnifiedFP32BaseURL
+	}
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return "", err
+	}
+	tmp, err := os.MkdirTemp(base, ".download-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	extracted := filepath.Join(tmp, model.SherpaParakeetUnifiedFP32)
+	if err := os.MkdirAll(extracted, 0755); err != nil {
+		return "", err
+	}
+	if err := downloadRequiredFiles(ctx, sourceBase, extracted, model.ParakeetUnifiedFP32Files()); err != nil {
+		return "", err
+	}
+	final := filepath.Join(base, model.ParakeetUnifiedFP32ID)
+	staging := final + ".new"
+	_ = os.RemoveAll(staging)
+	if err := os.Rename(extracted, staging); err != nil {
+		return "", err
+	}
+	if err := writeMetadataFiles(staging, parakeetUnifiedFP32Metadata); err != nil {
+		return "", err
+	}
+	if err := writeChecksums(staging, model.ParakeetUnifiedFP32Files()); err != nil {
+		return "", err
+	}
+	res := model.CheckDir(staging, model.CheckOptions{StrictSizes: true})
+	if !res.OK {
+		return "", fmt.Errorf("downloaded model failed validation: %s", strings.Join(res.Errors, "; "))
+	}
+	return activateInstall(base, model.ParakeetUnifiedFP32ID, staging)
+}
+
 func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, error) {
-	base := opts.Dir
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".local", "share", "waydict", "models")
+	base, err := modelRoot(opts.Dir)
+	if err != nil {
+		return "", err
 	}
 	url := opts.URL
 	if url == "" {
@@ -59,23 +98,19 @@ func InstallParakeetV3Int8(ctx context.Context, opts InstallOptions) (string, er
 	if err := os.Rename(extracted, staging); err != nil {
 		return "", err
 	}
-	if err := writeMetadataFiles(staging); err != nil {
+	if err := writeMetadataFiles(staging, parakeetV3Int8Metadata); err != nil {
 		return "", err
 	}
-	if err := writeChecksums(staging); err != nil {
+	if err := writeChecksums(staging, model.ParakeetV3Int8Files()); err != nil {
 		return "", err
 	}
-	return activateInstall(base, staging)
+	return activateInstall(base, model.ParakeetV3Int8ID, staging)
 }
 
 func InstallSileroVAD(ctx context.Context, opts InstallOptions) (string, error) {
-	base := opts.Dir
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".local", "share", "waydict", "models")
+	base, err := modelRoot(opts.Dir)
+	if err != nil {
+		return "", err
 	}
 	url := opts.URL
 	if url == "" {
@@ -107,8 +142,19 @@ func InstallSileroVAD(ctx context.Context, opts InstallOptions) (string, error) 
 	return final, nil
 }
 
-func activateInstall(base, staging string) (string, error) {
-	final := filepath.Join(base, model.ParakeetV3Int8ID)
+func modelRoot(dir string) (string, error) {
+	if dir != "" {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "share", "waydict", "models"), nil
+}
+
+func activateInstall(base, modelID, staging string) (string, error) {
+	final := filepath.Join(base, modelID)
 	backup := final + ".old"
 	_ = os.RemoveAll(backup)
 	if _, err := os.Stat(final); err == nil {
@@ -132,6 +178,30 @@ func activateInstall(base, staging string) (string, error) {
 		return "", err
 	}
 	return final, nil
+}
+
+func downloadRequiredFiles(ctx context.Context, baseURL, dir string, files []model.RequiredFile) error {
+	for _, req := range files {
+		dst := filepath.Join(dir, req.Name)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+		if err := download(ctx, fileURL(baseURL, req.Name), dst); err != nil {
+			return fmt.Errorf("%s: %w", req.Name, err)
+		}
+		st, err := os.Stat(dst)
+		if err != nil {
+			return err
+		}
+		if st.Size() < req.MinSize {
+			return fmt.Errorf("%s is implausibly small (%d bytes); check the URL", req.Name, st.Size())
+		}
+	}
+	return nil
+}
+
+func fileURL(base, name string) string {
+	return strings.TrimRight(base, "/") + "/" + name
 }
 
 func download(ctx context.Context, url, dst string) error {
@@ -217,13 +287,13 @@ func modeOrDefault(mode os.FileMode, def os.FileMode) os.FileMode {
 	return mode
 }
 
-func writeChecksums(dir string) error {
+func writeChecksums(dir string, files []model.RequiredFile) error {
 	out, err := os.Create(filepath.Join(dir, model.DefaultChecksumFile))
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	for _, req := range model.RequiredFiles() {
+	for _, req := range files {
 		path := filepath.Join(dir, req.Name)
 		sum, err := fileSHA256(path)
 		if err != nil {
@@ -236,10 +306,15 @@ func writeChecksums(dir string) error {
 	return nil
 }
 
-func writeMetadataFiles(dir string) error {
+type metadataFiles struct {
+	License   string
+	ModelCard string
+}
+
+func writeMetadataFiles(dir string, metadata metadataFiles) error {
 	files := map[string]string{
-		"LICENSE":       metadataLicense,
-		"MODEL_CARD.md": metadataModelCard,
+		"LICENSE":       metadata.License,
+		"MODEL_CARD.md": metadata.ModelCard,
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
@@ -249,16 +324,46 @@ func writeMetadataFiles(dir string) error {
 	return nil
 }
 
-const metadataLicense = `Parakeet-TDT-0.6B-v3 model notice
+var parakeetUnifiedFP32Metadata = metadataFiles{
+	License: `Parakeet Unified English 0.6B model notice
+
+The installed ONNX model files are converted from NVIDIA parakeet-unified-en-0.6b and are distributed under the NVIDIA Open Model License.
+
+Review the upstream model card and the sherpa-onnx conversion package notices before redistributing model assets:
+https://huggingface.co/nvidia/parakeet-unified-en-0.6b
+https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-non-streaming
+https://github.com/k2-fsa/sherpa-onnx
+`,
+	ModelCard: `# Parakeet Unified English 0.6B FP32
+
+These files are the sherpa-onnx FP32 non-streaming conversion of NVIDIA parakeet-unified-en-0.6b for local CPU speech recognition.
+
+Runtime assumptions used by waydict:
+
+- 16 kHz mono audio input.
+- sherpa-onnx transducer model type: nemo_transducer.
+- CPU provider.
+- Non-streaming/offline recognition.
+
+Upstream references:
+
+- NVIDIA model card: https://huggingface.co/nvidia/parakeet-unified-en-0.6b
+- sherpa-onnx conversion package: https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-non-streaming
+- sherpa-onnx usage notes: https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-transducer/nemo-transducer-models.html
+`,
+}
+
+var parakeetV3Int8Metadata = metadataFiles{
+	License: `Parakeet-TDT-0.6B-v3 model notice
 
 The installed ONNX model files are converted from NVIDIA parakeet-tdt-0.6b-v3 and are described by the upstream model card as CC-BY-4.0 licensed.
 
 Review the upstream model card and the sherpa-onnx conversion package notices before redistributing model assets:
 https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
 https://github.com/k2-fsa/sherpa-onnx
-`
+`,
 
-const metadataModelCard = `# Parakeet-TDT-0.6B-v3 INT8
+	ModelCard: `# Parakeet-TDT-0.6B-v3 INT8
 
 These files are the sherpa-onnx INT8 conversion of NVIDIA parakeet-tdt-0.6b-v3 for local CPU speech recognition.
 
@@ -272,7 +377,8 @@ Upstream references:
 
 - NVIDIA model card: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
 - sherpa-onnx conversion package: https://github.com/k2-fsa/sherpa-onnx
-`
+`,
+}
 
 func fileSHA256(path string) (string, error) {
 	f, err := os.Open(path)

@@ -94,7 +94,7 @@ func TestUnpackTarRejectsAbsolutePath(t *testing.T) {
 
 func TestWriteChecksumsMatchesRequiredFiles(t *testing.T) {
 	dir := writeTinyModel(t)
-	if err := writeChecksums(dir); err != nil {
+	if err := writeChecksums(dir, model.RequiredFiles()); err != nil {
 		t.Fatal(err)
 	}
 	if res := model.CheckDir(dir, model.CheckOptions{}); !res.OK {
@@ -110,7 +110,7 @@ func TestWriteChecksumsMatchesRequiredFiles(t *testing.T) {
 
 func TestWriteMetadataFiles(t *testing.T) {
 	dir := writeTinyModel(t)
-	if err := writeMetadataFiles(dir); err != nil {
+	if err := writeMetadataFiles(dir, parakeetUnifiedFP32Metadata); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range model.MetadataFiles() {
@@ -129,7 +129,7 @@ func TestWriteMetadataFiles(t *testing.T) {
 
 func TestActivateInstallUpdatesCurrentSymlink(t *testing.T) {
 	base := t.TempDir()
-	final := filepath.Join(base, model.ParakeetV3Int8ID)
+	final := filepath.Join(base, model.ParakeetUnifiedFP32ID)
 	if err := os.Mkdir(final, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestActivateInstallUpdatesCurrentSymlink(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(staging, "marker"), []byte("new"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := activateInstall(base, staging)
+	got, err := activateInstall(base, model.ParakeetUnifiedFP32ID, staging)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,10 +180,11 @@ func writeTinyModel(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"encoder.int8.onnx": "encoder",
-		"decoder.int8.onnx": "decoder",
-		"joiner.int8.onnx":  "joiner",
-		"tokens.txt":        "a\nb\n",
+		"encoder.onnx":    "encoder",
+		"encoder.weights": "weights",
+		"decoder.onnx":    "decoder",
+		"joiner.onnx":     "joiner",
+		"tokens.txt":      "a\nb\n",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {

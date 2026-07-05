@@ -45,7 +45,7 @@ func TestCheckDirAcceptsMetadataFiles(t *testing.T) {
 
 func TestCheckDirRejectsUnreadableRequiredFile(t *testing.T) {
 	dir := writeTinyModel(t)
-	path := filepath.Join(dir, "encoder.int8.onnx")
+	path := filepath.Join(dir, "encoder.onnx")
 	if err := os.Chmod(path, 0000); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +134,47 @@ func TestCheckConfigRejectsMissingConfiguredModelFile(t *testing.T) {
 	}
 }
 
+func TestCheckConfigRequiresUnifiedEncoderWeights(t *testing.T) {
+	dir := writeTinyModel(t)
+	if err := os.Remove(filepath.Join(dir, "encoder.weights")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.ASR.ModelDir = dir
+	res := CheckConfig(cfg, CheckOptions{})
+	if res.OK {
+		t.Fatalf("check unexpectedly passed: %+v", res)
+	}
+	found := false
+	for _, item := range res.Items {
+		if filepath.Base(item.Path) == "encoder.weights" && !item.OK {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing encoder weights were not reported: %+v", res.Items)
+	}
+}
+
+func TestCheckDirAcceptsLegacyInt8Layout(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"encoder.int8.onnx": "encoder",
+		"decoder.int8.onnx": "decoder",
+		"joiner.int8.onnx":  "joiner",
+		"tokens.txt":        "a\nb\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := CheckDir(dir, CheckOptions{})
+	if !res.OK {
+		t.Fatalf("check failed: %+v", res.Errors)
+	}
+}
+
 func TestCheckVADConfigSileroMissingWarnsButOK(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.VAD.Engine = "silero"
@@ -176,10 +217,11 @@ func writeTinyModel(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"encoder.int8.onnx": "encoder",
-		"decoder.int8.onnx": "decoder",
-		"joiner.int8.onnx":  "joiner",
-		"tokens.txt":        "a\nb\n",
+		"encoder.onnx":    "encoder",
+		"encoder.weights": "weights",
+		"decoder.onnx":    "decoder",
+		"joiner.onnx":     "joiner",
+		"tokens.txt":      "a\nb\n",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {

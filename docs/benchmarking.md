@@ -16,7 +16,7 @@ The command prints JSON:
   "rtf": 0.294,
   "threads": 4,
   "provider": "cpu",
-  "model": "parakeet-tdt-0.6b-v3-int8",
+  "model": "parakeet-unified-en-0.6b-fp32",
   "rss_peak_bytes": 1812344832
 }
 ```

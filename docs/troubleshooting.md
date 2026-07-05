@@ -18,20 +18,20 @@ Run `waydict bench --file sample.wav --repeat 3`, then adjust `[asr].num_threads
 
 ## High Memory Use
 
-The Parakeet v3 INT8 model is large. The target loaded RSS is under roughly 2.5 GiB on x86_64 Linux. Reduce other memory pressure before starting the daemon and avoid running multiple daemons.
+The Parakeet Unified FP32 model is large. Expect materially higher RSS than the older INT8 package. Reduce other memory pressure before starting the daemon and avoid running multiple daemons.
 
 ## Missing Model Files
 
 `waydict doctor` reports which models are missing. To (re)install both:
 
 ```sh
-waydict model install all   # or individually: parakeet-v3-int8 / silero-vad
+waydict model install all   # or individually: parakeet-unified-en-0.6b-fp32 / silero-vad
 waydict model check
 ```
 
 A missing **ASR** model is fatal — the daemon exits on startup. A missing **silero VAD** model is not: the daemon keeps running but degrades to the energy VAD (see next section).
 
-If using a manual model download, point `[asr].model_dir` at the directory containing `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt`.
+If using a manual model download, point `[asr].model_dir` at the directory containing `encoder.onnx`, `encoder.weights`, `decoder.onnx`, `joiner.onnx`, and `tokens.txt`.
 
 ## Speech Cut Off or Not Detected (silero VAD missing)
 

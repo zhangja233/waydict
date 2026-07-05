@@ -103,7 +103,7 @@ func checkMetadataAndChecksums(res *CheckResult, dir string) {
 }
 
 func canonicalRequiredPaths(dir string) []requiredPath {
-	required := RequiredFiles()
+	required := requiredFilesForDir(dir)
 	out := make([]requiredPath, 0, len(required))
 	for _, req := range required {
 		out = append(out, requiredPath{
@@ -116,13 +116,44 @@ func canonicalRequiredPaths(dir string) []requiredPath {
 }
 
 func configuredRequiredPaths(cfg config.Config) []requiredPath {
-	required := RequiredFiles()
-	return []requiredPath{
-		{Name: cfg.ASR.Encoder, Path: cfg.EncoderPath(), MinSize: required[0].MinSize},
-		{Name: cfg.ASR.Decoder, Path: cfg.DecoderPath(), MinSize: required[1].MinSize},
-		{Name: cfg.ASR.Joiner, Path: cfg.JoinerPath(), MinSize: required[2].MinSize},
-		{Name: cfg.ASR.Tokens, Path: cfg.TokensPath(), MinSize: required[3].MinSize},
+	out := []requiredPath{
+		{Name: cfg.ASR.Encoder, Path: cfg.EncoderPath(), MinSize: configuredMinSize("encoder", cfg.ASR.Encoder)},
+		{Name: cfg.ASR.Decoder, Path: cfg.DecoderPath(), MinSize: configuredMinSize("decoder", cfg.ASR.Decoder)},
+		{Name: cfg.ASR.Joiner, Path: cfg.JoinerPath(), MinSize: configuredMinSize("joiner", cfg.ASR.Joiner)},
+		{Name: cfg.ASR.Tokens, Path: cfg.TokensPath(), MinSize: configuredMinSize("tokens", cfg.ASR.Tokens)},
 	}
+	if cfg.ASR.Encoder == "encoder.onnx" {
+		out = append(out, requiredPath{
+			Name:    "encoder.weights",
+			Path:    filepath.Join(cfg.ASR.ModelDir, "encoder.weights"),
+			MinSize: configuredMinSize("encoder_weights", "encoder.weights"),
+		})
+	}
+	return out
+}
+
+func requiredFilesForDir(dir string) []RequiredFile {
+	if fileExists(filepath.Join(dir, "encoder.int8.onnx")) && !fileExists(filepath.Join(dir, "encoder.onnx")) {
+		return ParakeetV3Int8Files()
+	}
+	return RequiredFiles()
+}
+
+func configuredMinSize(role, name string) int64 {
+	for _, req := range append(ParakeetUnifiedFP32Files(), ParakeetV3Int8Files()...) {
+		if req.Name == name {
+			return req.MinSize
+		}
+	}
+	if role == "tokens" {
+		return 32
+	}
+	return 1024
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func (r *CheckResult) addErr(msg string) {

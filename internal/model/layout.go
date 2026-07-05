@@ -3,6 +3,10 @@ package model
 import "path/filepath"
 
 const (
+	ParakeetUnifiedFP32ID      = "parakeet-unified-en-0.6b-fp32"
+	SherpaParakeetUnifiedFP32  = "sherpa-onnx-nemo-parakeet-unified-en-0.6b-non-streaming"
+	ParakeetUnifiedFP32BaseURL = "https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-non-streaming/resolve/main"
+
 	ParakeetV3Int8ID     = "parakeet-tdt-0.6b-v3-int8"
 	SherpaParakeetV3Int8 = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 	ParakeetV3ArchiveURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
@@ -21,6 +25,20 @@ type RequiredFile struct {
 }
 
 func RequiredFiles() []RequiredFile {
+	return ParakeetUnifiedFP32Files()
+}
+
+func ParakeetUnifiedFP32Files() []RequiredFile {
+	return []RequiredFile{
+		{Name: "encoder.onnx", MinSize: 32 * 1024 * 1024},
+		{Name: "encoder.weights", MinSize: 2 * 1024 * 1024 * 1024},
+		{Name: "decoder.onnx", MinSize: 20 * 1024 * 1024},
+		{Name: "joiner.onnx", MinSize: 4 * 1024 * 1024},
+		{Name: "tokens.txt", MinSize: 32},
+	}
+}
+
+func ParakeetV3Int8Files() []RequiredFile {
 	return []RequiredFile{
 		{Name: "encoder.int8.onnx", MinSize: 100 * 1024 * 1024},
 		{Name: "decoder.int8.onnx", MinSize: 1024 * 1024},

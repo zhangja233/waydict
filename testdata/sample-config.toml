@@ -35,10 +35,10 @@ decoding_method = "greedy_search"
 num_threads = 4
 max_active_paths = 4
 blank_penalty = 0.0
-model_dir = "~/.local/share/waydict/models/parakeet-tdt-0.6b-v3-int8"
-encoder = "encoder.int8.onnx"
-decoder = "decoder.int8.onnx"
-joiner = "joiner.int8.onnx"
+model_dir = "~/.local/share/waydict/models/parakeet-unified-en-0.6b-fp32"
+encoder = "encoder.onnx"
+decoder = "decoder.onnx"
+joiner = "joiner.onnx"
 tokens = "tokens.txt"
 
 [injection]
