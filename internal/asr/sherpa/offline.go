@@ -22,6 +22,8 @@ type Engine struct {
 	loaded     bool
 }
 
+const minDecodeAudio = 100 * time.Millisecond
+
 func New(cfg config.ASR) *Engine {
 	return &Engine{cfg: cfg}
 }
@@ -92,8 +94,11 @@ func (e *Engine) Close() error {
 }
 
 func (e *Engine) Transcribe(ctx context.Context, segment asr.AudioSegment) (asr.Transcript, error) {
-	if len(segment.Samples) == 0 {
-		return asr.Transcript{SegmentID: segment.ID, StartedAt: segment.StartedAt, AudioDuration: segment.Duration, Empty: true}, nil
+	if len(segment.Samples) == 0 || tooShortForDecode(segment) {
+		return emptyTranscript(segment, 0), nil
+	}
+	if segment.SampleRate <= 0 {
+		return asr.Transcript{}, fmt.Errorf("invalid segment sample rate %d", segment.SampleRate)
 	}
 	if err := e.Load(ctx); err != nil {
 		return asr.Transcript{}, err
@@ -119,7 +124,7 @@ func (e *Engine) Transcribe(ctx context.Context, segment asr.AudioSegment) (asr.
 	result := stream.GetResult()
 	decodeDuration := time.Since(start)
 	if result == nil {
-		return asr.Transcript{SegmentID: segment.ID, StartedAt: segment.StartedAt, AudioDuration: segment.Duration, DecodeDuration: decodeDuration, Empty: true}, nil
+		return emptyTranscript(segment, decodeDuration), nil
 	}
 	timestamps := make([]float64, len(result.Timestamps))
 	for i, ts := range result.Timestamps {
@@ -141,4 +146,26 @@ func (e *Engine) Transcribe(ctx context.Context, segment asr.AudioSegment) (asr.
 		RealTimeFactor:  rtf,
 		Empty:           strings.TrimSpace(text) == "",
 	}, nil
+}
+
+func tooShortForDecode(segment asr.AudioSegment) bool {
+	sampleRate := segment.SampleRate
+	if sampleRate <= 0 {
+		sampleRate = 16000
+	}
+	minSamples := int(minDecodeAudio.Seconds() * float64(sampleRate))
+	if minSamples < 1 {
+		minSamples = 1
+	}
+	return len(segment.Samples) < minSamples
+}
+
+func emptyTranscript(segment asr.AudioSegment, decodeDuration time.Duration) asr.Transcript {
+	return asr.Transcript{
+		SegmentID:      segment.ID,
+		StartedAt:      segment.StartedAt,
+		AudioDuration:  segment.Duration,
+		DecodeDuration: decodeDuration,
+		Empty:          true,
+	}
 }

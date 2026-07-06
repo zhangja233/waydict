@@ -125,6 +125,9 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 }
 
 func (a *App) HandleControl(ctx context.Context, req control.Request) control.Response {
+	if req.Command != "status" {
+		a.logDebug("control request", "command", req.Command, "request_id", req.ID)
+	}
 	switch req.Command {
 	case "start":
 		mode, ok := parseMode(stringArg(req.Args, "mode"))
@@ -181,7 +184,9 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.mu.Lock()
 	if a.status.State != api.StateIdle && a.status.State != api.StateError {
+		state := a.status.State
 		a.mu.Unlock()
+		a.logDebug("start ignored", "mode", mode, "state", state)
 		return nil
 	}
 	a.status.State = api.StateArming
@@ -189,9 +194,12 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.LastError = nil
 	a.status.LastWarning = nil
 	a.currentSession++
+	session := a.currentSession
 	a.mu.Unlock()
+	a.logInfo("start requested", "session", session, "mode", mode)
 
 	if a.injector != nil {
+		a.logDebug("checking injector", "session", session)
 		if err := a.injector.Available(ctx); err != nil {
 			a.recordError(api.StateIdle, "wtype_unavailable", err)
 			return withCode("wtype_unavailable", err)
@@ -199,15 +207,18 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	}
 	if a.engine != nil && !a.engine.Loaded() {
 		if a.modelChecker != nil {
+			a.logDebug("checking model", "session", session)
 			if err := a.modelChecker(); err != nil {
 				a.recordError(api.StateIdle, "model_invalid", err)
 				return withCode("model_invalid", err)
 			}
 		}
+		a.logInfo("asr load start", "session", session)
 		if err := a.engine.Load(ctx); err != nil {
 			a.recordError(api.StateIdle, "model_invalid", err)
 			return withCode("model_invalid", err)
 		}
+		a.logInfo("asr load complete", "session", session)
 	}
 	if a.guard != nil && a.cfg.Sway.FocusCheck {
 		if err := a.guard.CaptureStart(ctx); err != nil {
@@ -220,10 +231,12 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	src := a.source
 	a.mu.Unlock()
 	if src == nil {
+		a.logInfo("audio source recreate start", "session", session)
 		if err := a.recreateSource(ctx); err != nil {
 			a.recordError(api.StateIdle, "pipewire_unavailable", err)
 			return withCode("pipewire_unavailable", err)
 		}
+		a.logInfo("audio source recreate complete", "session", session)
 	}
 	a.mu.Lock()
 	src = a.source
@@ -233,6 +246,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
 		return withCode("pipewire_unavailable", err)
 	}
+	a.logDebug("audio source start", "session", session)
 	if err := src.Start(ctx); err != nil {
 		a.clearSource(src)
 		a.recordError(api.StateIdle, "pipewire_unavailable", err)
@@ -250,6 +264,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.Audio.Capturing = true
 	a.status.ASR.Loaded = a.engine != nil && a.engine.Loaded()
 	a.mu.Unlock()
+	a.logInfo("capture started", "session", session)
 	go func() {
 		defer close(captureDone)
 		a.captureLoop(sessionCtx)
@@ -272,7 +287,9 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	if !commit {
 		a.discarded[session] = struct{}{}
 	}
+	pending := a.pendingASR
 	a.mu.Unlock()
+	a.logInfo("stop requested", "session", session, "commit", commit, "was_capturing", wasCapturing, "pending_asr", pending)
 	if cancel != nil {
 		cancel()
 	}
@@ -280,6 +297,7 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	src := a.source
 	a.mu.Unlock()
 	if src != nil && wasCapturing {
+		a.logDebug("audio source pause", "session", session)
 		if err := src.Pause(ctx); err != nil {
 			a.recordError(api.StateIdle, "pipewire_unavailable", err)
 			return withCode("pipewire_unavailable", err)
@@ -292,10 +310,12 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	if captureDone != nil {
 		<-captureDone
 	}
+	a.logDebug("capture loop joined", "session", session)
 	if a.segmenter != nil {
 		a.segMu.Lock()
 		flushed := a.segmenter.Flush(commit, time.Now())
 		a.segMu.Unlock()
+		a.logDebug("segmenter flushed", "session", session, "commit", commit, "segments", len(flushed))
 		for _, seg := range flushed {
 			a.queueSegment(seg)
 		}
@@ -345,6 +365,12 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 		a.status.LastUninjectedText = ""
 	}
 	a.mu.Unlock()
+	a.logInfo("config reloaded",
+		"log_level", cfg.Daemon.LogLevel,
+		"redacted_transcripts", cfg.Daemon.RedactTranscriptsInLogs,
+		"auto_stop_seconds", cfg.Daemon.AutoStopAfterSilenceSeconds,
+		"append_space", cfg.Injection.AppendSpace,
+		"debug_save_audio", cfg.Debug.SaveAudioSegments)
 	return nil
 }
 
@@ -437,6 +463,12 @@ func (a *App) captureLoop(ctx context.Context) {
 	if len(buf) == 0 {
 		buf = make([]float32, 320)
 	}
+	start := time.Now()
+	reason := "return"
+	a.logDebug("capture loop start", "sample_rate", a.cfg.Audio.SampleRate, "quantum_ms", a.cfg.Audio.QuantumMS, "buffer_frames", len(buf))
+	defer func() {
+		a.logDebug("capture loop exit", "reason", reason, "elapsed_ms", time.Since(start).Milliseconds())
+	}()
 	var prevOverruns uint64
 	for {
 		// pipewire Read returns (0, nil) on a paused source, so the loop must
@@ -444,6 +476,7 @@ func (a *App) captureLoop(ctx context.Context) {
 		// a later Start races a second captureLoop on the shared segmenter.
 		select {
 		case <-ctx.Done():
+			reason = "context_done"
 			return
 		default:
 		}
@@ -454,9 +487,11 @@ func (a *App) captureLoop(ctx context.Context) {
 		if !capturing {
 			// Stop cleared this; exit even if an interleaved Start left the
 			// context live, so no orphan loop touches the segmenter.
+			reason = "not_capturing"
 			return
 		}
 		if src == nil {
+			reason = "source_nil"
 			a.recordError(api.StateIdle, "pipewire_unavailable", audio.ErrUnavailable)
 			return
 		}
@@ -468,8 +503,13 @@ func (a *App) captureLoop(ctx context.Context) {
 					a.segmenter.Reset()
 					a.segMu.Unlock()
 				}
+				reason = "read_error"
+				a.logWarn("audio read failed", "error", err)
 				a.recordError(api.StateIdle, classify(err), err)
 				a.scheduleAudioRetry()
+			}
+			if ctx.Err() != nil {
+				reason = "context_done"
 			}
 			return
 		}
@@ -477,6 +517,7 @@ func (a *App) captureLoop(ctx context.Context) {
 			continue
 		}
 		if stats := src.Stats(); stats.Overruns > prevOverruns {
+			a.logWarn("audio capture overrun", "overruns", stats.Overruns, "previous_overruns", prevOverruns, "sample_rate", stats.SampleRate)
 			prevOverruns = stats.Overruns
 			if marker, ok := a.segmenter.(interface{ MarkCaptureOverrun() }); ok {
 				a.segMu.Lock()
@@ -494,6 +535,9 @@ func (a *App) captureLoop(ctx context.Context) {
 		a.segMu.Lock()
 		segs := a.segmenter.Feed(buf[:n], now)
 		a.segMu.Unlock()
+		if len(segs) > 0 {
+			a.logDebug("segmenter produced segments", "segments", len(segs), "input_frames", n)
+		}
 		for _, seg := range segs {
 			a.queueSegment(seg)
 		}
@@ -506,19 +550,29 @@ func (a *App) queueSegment(seg asr.AudioSegment) {
 	session := a.currentSession
 	if _, ok := a.discarded[session]; ok {
 		a.mu.Unlock()
+		a.logDebug("segment discarded before queue", append([]any{"session", session}, segmentLogAttrs(seg)...)...)
 		return
 	}
 	a.status.State = api.StateRecognizing
 	a.lastActivity = time.Now()
 	a.pendingASR++
+	pending := a.pendingASR
 	a.mu.Unlock()
+	if isShortSegment(seg) {
+		a.logWarn("short audio segment queued", append([]any{"session", session, "pending_asr", pending}, segmentLogAttrs(seg)...)...)
+	} else {
+		a.logDebug("audio segment queued", append([]any{"session", session, "pending_asr", pending}, segmentLogAttrs(seg)...)...)
+	}
 	job := segmentJob{session: session, segment: seg}
 	select {
 	case a.asrQueue <- job:
+		a.logDebug("asr queue accepted segment", append([]any{"session", session, "queue_len", len(a.asrQueue)}, segmentLogAttrs(seg)...)...)
 	case <-a.rootCtx.Done():
 		a.finishASRJob(session)
+		a.logWarn("segment dropped because root context ended", append([]any{"session", session}, segmentLogAttrs(seg)...)...)
 	default:
 		a.finishASRJob(session)
+		a.logWarn("segment dropped because asr queue is full", append([]any{"session", session, "queue_len", len(a.asrQueue)}, segmentLogAttrs(seg)...)...)
 		a.recordError(a.nextState(), "recognition_failed", fmt.Errorf("recognition queue full; dropped segment %s", seg.ID))
 	}
 }
@@ -540,6 +594,7 @@ func (a *App) autoStopLoop(ctx context.Context) {
 			capturing := a.capturing
 			a.mu.Unlock()
 			if capturing && idleFor >= timeout {
+				a.logInfo("auto stop after silence", "idle_ms", idleFor.Milliseconds(), "timeout_ms", timeout.Milliseconds())
 				_ = a.Stop(context.Background(), true)
 				return
 			}
@@ -564,15 +619,18 @@ func (a *App) recreateSource(ctx context.Context) error {
 	}
 	src, err := a.sourceFactory()
 	if err != nil {
+		a.logWarn("audio source recreate failed", "error", err)
 		return err
 	}
+	sampleRate := src.Stats().SampleRate
 	a.mu.Lock()
 	old := a.source
 	a.source = src
 	a.status.Audio.Capturing = false
-	a.status.Audio.SampleRate = src.Stats().SampleRate
+	a.status.Audio.SampleRate = sampleRate
 	a.mu.Unlock()
 	closeSource(old)
+	a.logDebug("audio source recreated", "sample_rate", sampleRate)
 	return nil
 }
 
@@ -601,14 +659,17 @@ func (a *App) scheduleAudioRetry() {
 			capturing := a.capturing
 			a.mu.Unlock()
 			if capturing {
+				a.logDebug("audio retry stopped because capture resumed")
 				return
 			}
 			if err := a.recreateSource(a.rootCtx); err == nil {
 				a.mu.Lock()
 				a.status.LastError = nil
 				a.mu.Unlock()
+				a.logInfo("audio source retry succeeded")
 				return
 			}
+			a.logWarn("audio source retry failed", "next_backoff_ms", backoff.Milliseconds())
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
@@ -631,12 +692,15 @@ func (a *App) clearSource(src audio.Source) {
 }
 
 func (a *App) asrWorker(ctx context.Context) {
+	a.logDebug("asr worker start")
+	defer a.logDebug("asr worker exit")
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case job := <-a.asrQueue:
 			if a.sessionDiscarded(job.session) {
+				a.logDebug("asr job skipped because session is discarded", append([]any{"session", job.session}, segmentLogAttrs(job.segment)...)...)
 				a.finishASRJob(job.session)
 				continue
 			}
@@ -661,6 +725,8 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	}
 	a.setState(api.StateRecognizing)
 	tctx, cancel := context.WithTimeout(ctx, asrTimeout(seg.Duration))
+	timeout := asrTimeout(seg.Duration)
+	a.logInfo("asr decode start", append([]any{"session", job.session, "timeout_ms", timeout.Milliseconds()}, segmentLogAttrs(seg)...)...)
 	tr, err := a.engine.Transcribe(tctx, seg)
 	cancel()
 	if err != nil {
@@ -668,6 +734,7 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 			a.setState(a.nextState())
 			return
 		}
+		a.logWarn("asr decode failed", append([]any{"session", job.session, "error", err}, segmentLogAttrs(seg)...)...)
 		a.recordError(a.nextState(), recognitionErrorCode(err), err)
 		return
 	}
@@ -678,12 +745,21 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	a.mu.Lock()
 	a.status.ASR.LastRTF = tr.RealTimeFactor
 	a.mu.Unlock()
+	a.logInfo("asr decode complete",
+		"session", job.session,
+		"segment_id", seg.ID,
+		"empty", tr.Empty,
+		"text_bytes", len(tr.Text),
+		"audio_ms", tr.AudioDuration.Milliseconds(),
+		"decode_ms", tr.DecodeDuration.Milliseconds(),
+		"rtf", tr.RealTimeFactor)
 	if tr.Empty {
 		a.setState(a.nextState())
 		return
 	}
 	text := a.post.Apply(tr.Text)
 	if text == "" {
+		a.logDebug("postprocess produced empty text", "session", job.session, "segment_id", seg.ID)
 		a.setState(a.nextState())
 		return
 	}
@@ -692,6 +768,7 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		var err error
 		focusWarning, err = a.guard.CheckWithWarning(ctx)
 		if err != nil {
+			a.logWarn("focus guard cancelled injection", "session", job.session, "segment_id", seg.ID, "error", err)
 			a.recordCanceledTranscript(text, err)
 			a.setState(a.nextState())
 			return
@@ -699,6 +776,7 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	}
 	if a.injector != nil {
 		a.setState(api.StateTyping)
+		a.logDebug("typing transcript", "session", job.session, "segment_id", seg.ID, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs)
 		if err := a.injector.TypeText(ctx, text); err != nil {
 			a.recordUninjected(text, err)
 			a.setState(a.nextState())
@@ -717,6 +795,7 @@ func (a *App) finishModeAfterSegment(ctx context.Context) {
 	mode := a.status.Mode
 	a.mu.Unlock()
 	if mode != nil && *mode == api.ModeOneshot {
+		a.logDebug("oneshot segment complete; stopping")
 		_ = a.Stop(ctx, false)
 		return
 	}
@@ -732,7 +811,11 @@ func (a *App) saveDebugSegment(seg asr.AudioSegment) error {
 	}
 	name := safeSegmentFilename(seg.ID) + ".wav"
 	path := filepath.Join(a.cfg.Debug.SaveAudioDir, name)
-	return audio.WriteWAVFloat32(path, seg.Samples, seg.SampleRate)
+	if err := audio.WriteWAVFloat32(path, seg.Samples, seg.SampleRate); err != nil {
+		return err
+	}
+	a.logDebug("debug audio segment saved", append([]any{"path", path}, segmentLogAttrs(seg)...)...)
+	return nil
 }
 
 func safeSegmentFilename(id string) string {
@@ -859,6 +942,9 @@ func (a *App) recordError(state api.State, code string, err error) {
 		a.segmentOpen = false
 		a.status.Audio.Capturing = false
 	}
+	if a.logger != nil {
+		a.logger.Warn("state error recorded", "state", state, "code", code, "error", err)
+	}
 }
 
 func (a *App) recordFocus(f *swayipc.FocusedContainer) {
@@ -890,6 +976,9 @@ func (a *App) recordTranscript(text string) {
 	} else {
 		a.status.LastTranscript = text
 	}
+	if a.logger != nil {
+		a.logger.Info("transcript accepted", "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs)
+	}
 }
 
 func (a *App) recordCanceledTranscript(text string, err error) {
@@ -902,6 +991,9 @@ func (a *App) recordCanceledTranscript(text string, err error) {
 		a.status.LastUninjectedText = text
 	} else {
 		a.status.LastUninjectedText = ""
+	}
+	if a.logger != nil {
+		a.logger.Warn("transcript cancelled", "code", "focus_changed", "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
 	}
 }
 
@@ -916,6 +1008,9 @@ func (a *App) recordUninjected(text string, err error) {
 	} else {
 		a.status.LastUninjectedText = ""
 	}
+	if a.logger != nil {
+		a.logger.Warn("transcript not injected", "code", "wtype_failed", "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
+	}
 }
 
 func (a *App) recordWarning(code, message string) {
@@ -926,6 +1021,43 @@ func (a *App) recordWarning(code, message string) {
 	if logger != nil {
 		logger.Warn(message, "code", code)
 	}
+}
+
+func (a *App) logDebug(msg string, args ...any) {
+	if a.logger != nil {
+		a.logger.Debug(msg, args...)
+	}
+}
+
+func (a *App) logInfo(msg string, args ...any) {
+	if a.logger != nil {
+		a.logger.Info(msg, args...)
+	}
+}
+
+func (a *App) logWarn(msg string, args ...any) {
+	if a.logger != nil {
+		a.logger.Warn(msg, args...)
+	}
+}
+
+func segmentLogAttrs(seg asr.AudioSegment) []any {
+	return []any{
+		"segment_id", seg.ID,
+		"samples", len(seg.Samples),
+		"sample_rate", seg.SampleRate,
+		"duration_ms", seg.Duration.Milliseconds(),
+		"capture_overrun", seg.CaptureOverrun,
+		"degraded", seg.Degraded,
+	}
+}
+
+func isShortSegment(seg asr.AudioSegment) bool {
+	sampleRate := seg.SampleRate
+	if sampleRate <= 0 {
+		sampleRate = 16000
+	}
+	return len(seg.Samples) < sampleRate/10
 }
 
 func stringArg(args map[string]any, name string) string {

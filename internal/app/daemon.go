@@ -32,6 +32,20 @@ func RunDaemonWithOptions(ctx context.Context, cfg config.Config, opts DaemonOpt
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	logger := svlog.New(cfg.Daemon.LogLevel, nil)
+	logger.Info("daemon starting",
+		"log_level", cfg.Daemon.LogLevel,
+		"socket", cfg.Daemon.Socket,
+		"audio_backend", cfg.Audio.Backend,
+		"audio_sample_rate", cfg.Audio.SampleRate,
+		"audio_quantum_ms", cfg.Audio.QuantumMS,
+		"vad_engine", cfg.VAD.Engine,
+		"asr_engine", cfg.ASR.Engine,
+		"asr_model_type", cfg.ASR.ModelType,
+		"asr_provider", cfg.ASR.Provider,
+		"asr_threads", cfg.ASR.NumThreads,
+		"preload_model", cfg.Daemon.PreloadModel,
+		"redacted_transcripts", cfg.Daemon.RedactTranscriptsInLogs)
 	checkModel := func() error {
 		res := model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
 		if !res.OK {
@@ -55,9 +69,11 @@ func RunDaemonWithOptions(ctx context.Context, cfg config.Config, opts DaemonOpt
 	}
 	engine := sherpaasr.New(cfg.ASR)
 	if cfg.Daemon.PreloadModel {
+		logger.Info("asr preload start")
 		if err := engine.Load(ctx); err != nil {
 			return err
 		}
+		logger.Info("asr preload complete")
 	}
 	application := New(ctx, cfg, Dependencies{
 		SourceFactory: func() (audio.Source, error) {
@@ -69,10 +85,16 @@ func RunDaemonWithOptions(ctx context.Context, cfg config.Config, opts DaemonOpt
 		Engine:         engine,
 		Injector:       inject.NewWtype(cfg.Injection),
 		Focus:          focus,
-		Logger:         svlog.New(cfg.Daemon.LogLevel, nil),
+		Logger:         logger,
 		Shutdown:       cancelDaemon,
 	})
-	return control.NewServer(cfg.Daemon.Socket, application).Serve(ctx)
+	err := control.NewServer(cfg.Daemon.Socket, application).Serve(ctx)
+	if err != nil {
+		logger.Error("daemon stopped with error", "error", err)
+	} else {
+		logger.Info("daemon stopped")
+	}
+	return err
 }
 
 func reloadConfig(opts DaemonOptions) func(context.Context) (config.Config, error) {
