@@ -2,6 +2,7 @@
 
 #include "pipewire_capture.h"
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdatomic.h>
@@ -32,6 +33,7 @@ struct sv_pw_capture {
   atomic_uint_fast64_t write_count;
   atomic_uint_fast64_t overruns;
   atomic_int capturing;
+  atomic_int stream_state;
   atomic_int level_mdb;
 };
 
@@ -146,7 +148,9 @@ static void on_state_changed(void *data, enum pw_stream_state old, enum pw_strea
   (void)old;
   (void)error;
   struct sv_pw_capture *c = data;
+  atomic_store_explicit(&c->stream_state, state, memory_order_relaxed);
   atomic_store_explicit(&c->capturing, state == PW_STREAM_STATE_STREAMING, memory_order_relaxed);
+  pw_thread_loop_signal(c->loop, false);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -171,6 +175,7 @@ int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out) {
     return -3;
   }
   atomic_store(&c->level_mdb, -120000);
+  atomic_store(&c->stream_state, PW_STREAM_STATE_UNCONNECTED);
   c->loop = pw_thread_loop_new("waydict-capture", NULL);
   if (c->loop == NULL) goto fail;
   pw_thread_loop_lock(c->loop);
@@ -227,11 +232,27 @@ fail:
   return -4;
 }
 
-int sv_pw_capture_start(sv_pw_capture *capture) {
+int sv_pw_capture_start(sv_pw_capture *capture, int timeout_ms) {
   if (capture == NULL || capture->stream == NULL) return -1;
   pw_thread_loop_lock(capture->loop);
   ring_flush(capture);
   int rc = pw_stream_set_active(capture->stream, true);
+  if (rc >= 0) {
+    struct timespec deadline;
+    pw_thread_loop_get_time(capture->loop, &deadline, (int64_t)timeout_ms * SPA_NSEC_PER_MSEC);
+    for (;;) {
+      int state = atomic_load_explicit(&capture->stream_state, memory_order_relaxed);
+      if (state == PW_STREAM_STATE_STREAMING) break;
+      if (state == PW_STREAM_STATE_ERROR) {
+        rc = -EPIPE;
+        break;
+      }
+      if (pw_thread_loop_timed_wait_full(capture->loop, &deadline) == -ETIMEDOUT) {
+        rc = -ETIMEDOUT;
+        break;
+      }
+    }
+  }
   pw_thread_loop_unlock(capture->loop);
   return rc;
 }

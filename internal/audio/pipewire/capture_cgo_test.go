@@ -26,12 +26,18 @@ func TestPipeWireCaptureLifecycle(t *testing.T) {
 	if err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if !c.Stats().Capturing {
+		t.Fatal("capture did not reach the streaming state")
+	}
 	buf := make([]float32, 320)
 	if _, err := c.Read(ctx, buf); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Pause(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if c.Stats().Capturing {
+		t.Fatal("capture remained active after pause")
 	}
 	if err := c.Stop(ctx); err != nil {
 		t.Fatal(err)

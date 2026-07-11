@@ -131,7 +131,7 @@ func TestSourceFactoryUsedOnStart(t *testing.T) {
 	_ = app.Stop(ctx, false)
 }
 
-func TestSourceFactoryRetriesAfterStartFailure(t *testing.T) {
+func TestSourceFactoryRetriesStartFailure(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,14 +150,11 @@ func TestSourceFactoryRetriesAfterStartFailure(t *testing.T) {
 		Engine:    &FakeEngine{Text: "hello", IsLoaded: true},
 		Injector:  &MemoryInjector{},
 	})
-	if err := app.Start(ctx, api.ModeToggle); err == nil {
-		t.Fatal("expected first start to fail")
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
 	}
 	if !failed.closed {
 		t.Fatal("failed source was not closed")
-	}
-	if err := app.Start(ctx, api.ModeToggle); err != nil {
-		t.Fatal(err)
 	}
 	if calls != 2 {
 		t.Fatalf("factory calls = %d, want 2", calls)

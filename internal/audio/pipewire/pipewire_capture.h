@@ -23,7 +23,7 @@ typedef struct {
 } sv_pw_stats;
 
 int sv_pw_capture_new(const sv_pw_config *config, sv_pw_capture **out);
-int sv_pw_capture_start(sv_pw_capture *capture);
+int sv_pw_capture_start(sv_pw_capture *capture, int timeout_ms);
 int sv_pw_capture_pause(sv_pw_capture *capture);
 int sv_pw_capture_stop(sv_pw_capture *capture);
 int sv_pw_capture_read(sv_pw_capture *capture, float *dst, uint32_t max_frames, int timeout_ms);

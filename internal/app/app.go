@@ -249,8 +249,24 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.logDebug("audio source start", "session", session)
 	if err := src.Start(ctx); err != nil {
 		a.clearSource(src)
-		a.recordError(api.StateIdle, "pipewire_unavailable", err)
-		return withCode("pipewire_unavailable", err)
+		if retryErr := a.recreateSource(ctx); retryErr != nil {
+			err = fmt.Errorf("restart capture after %v: %w", err, retryErr)
+			a.recordError(api.StateIdle, "pipewire_unavailable", err)
+			return withCode("pipewire_unavailable", err)
+		}
+		a.mu.Lock()
+		src = a.source
+		a.mu.Unlock()
+		if src == nil {
+			err = audio.ErrUnavailable
+		} else {
+			err = src.Start(ctx)
+		}
+		if err != nil {
+			a.clearSource(src)
+			a.recordError(api.StateIdle, "pipewire_unavailable", err)
+			return withCode("pipewire_unavailable", err)
+		}
 	}
 	sessionCtx, cancel := context.WithCancel(a.rootCtx)
 	captureDone := make(chan struct{})

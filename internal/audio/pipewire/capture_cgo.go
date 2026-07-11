@@ -42,7 +42,7 @@ func New(cfg config.Audio) (*Capture, error) {
 }
 
 func (c *Capture) Start(context.Context) error {
-	if rc := C.sv_pw_capture_start(c.ptr); rc != 0 {
+	if rc := C.sv_pw_capture_start(c.ptr, 2000); rc != 0 {
 		return fmt.Errorf("pipewire capture start failed: %d", int(rc))
 	}
 	return nil
