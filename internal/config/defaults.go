@@ -11,12 +11,31 @@ const (
 	DefaultModelName = "parakeet-unified-en-0.6b-fp32"
 )
 
-func DefaultPath() string {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "waydict", "config.toml")
+// DefaultPaths lists the config locations searched when --config is not given,
+// in precedence order: the flat waydict.toml wins over the directory-form
+// waydict/config.toml. XDG_CONFIG_HOME overrides ~/.config for both.
+func DefaultPaths() []string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "waydict", "config.toml")
+	return []string{
+		filepath.Join(dir, "waydict.toml"),
+		filepath.Join(dir, "waydict", "config.toml"),
+	}
+}
+
+// DefaultPath returns the first config location that exists, or the preferred
+// one (flat waydict.toml) when none do.
+func DefaultPath() string {
+	paths := DefaultPaths()
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return paths[0]
 }
 
 func DefaultModelsRoot() string {

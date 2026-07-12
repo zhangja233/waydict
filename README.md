@@ -35,11 +35,12 @@ install -Dm755 waydict ~/.local/bin/waydict
 waydict model install all
 
 # optional config (sane defaults otherwise)
-mkdir -p ~/.config/waydict
-cp testdata/sample-config.toml ~/.config/waydict/config.toml
+cp testdata/sample-config.toml ~/.config/waydict.toml
 
 waydict doctor   # verify build, engine resolution, models, Vulkan, and session dependencies
 ```
+
+Without `--config`, waydict loads `~/.config/waydict.toml`, falling back to `~/.config/waydict/config.toml` (the flat file wins if both exist); `$XDG_CONFIG_HOME` overrides `~/.config`.
 
 ## Usage
 

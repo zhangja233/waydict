@@ -44,6 +44,73 @@ whisper_model = "$USER-small.en"
 	}
 }
 
+func TestDefaultPathPrefersFlatFileThenDirForm(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	flat := filepath.Join(home, ".config", "waydict.toml")
+	dir := filepath.Join(home, ".config", "waydict", "config.toml")
+
+	// Neither present: preferred (flat) path is returned.
+	if got := DefaultPath(); got != flat {
+		t.Fatalf("no config: DefaultPath() = %q, want %q", got, flat)
+	}
+
+	// Only the directory form present: it is used (backward compatible).
+	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultPath(); got != dir {
+		t.Fatalf("dir only: DefaultPath() = %q, want %q", got, dir)
+	}
+
+	// Both present: the flat file wins.
+	if err := os.WriteFile(flat, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultPath(); got != flat {
+		t.Fatalf("both present: DefaultPath() = %q, want %q", got, flat)
+	}
+}
+
+func TestDefaultPathHonorsXDGConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	want := []string{
+		filepath.Join(xdg, "waydict.toml"),
+		filepath.Join(xdg, "waydict", "config.toml"),
+	}
+	got := DefaultPaths()
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("DefaultPaths() = %v, want %v", got, want)
+	}
+}
+
+func TestLoadReadsFlatConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(home, "run"))
+	t.Setenv("USER", "tester")
+	flat := filepath.Join(home, ".config", "waydict.toml")
+	if err := os.MkdirAll(filepath.Dir(flat), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(flat, []byte("[asr]\nnum_threads = 3\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ASR.NumThreads != 3 {
+		t.Fatalf("flat config not loaded: num_threads = %d, want 3", cfg.ASR.NumThreads)
+	}
+}
+
 func TestLoadAppliesEngineConditionalProviderDefaults(t *testing.T) {
 	tests := []struct {
 		engine string
