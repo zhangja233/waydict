@@ -2,10 +2,10 @@ GO ?= go
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 BIN ?= waydict
-BUILD_TAGS ?= sherpa pipewire
+BUILD_TAGS ?= sherpa pipewire whispercpp
 GO_ENV ?= CGO_ENABLED=1 CGO_CFLAGS_ALLOW=-fno-strict-overflow
 
-.PHONY: build test test-sherpa test-pipewire test-model install clean
+.PHONY: build test test-sherpa test-pipewire test-model test-whisper install clean
 
 build:
 	$(GO_ENV) $(GO) build -tags "$(BUILD_TAGS)" -trimpath -ldflags "-s -w" -o $(BIN) ./cmd/waydict
@@ -25,6 +25,9 @@ test-model: build
 	test -n "$$WAYDICT_TEST_WAV"
 	test -n "$$(./$(BIN) transcribe --file "$$WAYDICT_TEST_WAV")"
 	./$(BIN) bench --file "$$WAYDICT_TEST_WAV"
+
+test-whisper:
+	$(GO_ENV) $(GO) test -tags whispercpp ./internal/asr/whispercpp
 
 install: build
 	install -Dm755 $(BIN) $(BINDIR)/$(BIN)

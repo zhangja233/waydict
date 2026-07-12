@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"waydict/internal/asr"
 	"waydict/internal/config"
 )
 
@@ -18,11 +19,19 @@ type CheckOptions struct {
 }
 
 type CheckResult struct {
-	Dir      string      `json:"dir"`
-	OK       bool        `json:"ok"`
-	Items    []CheckItem `json:"items"`
-	Errors   []string    `json:"errors,omitempty"`
-	Warnings []string    `json:"warnings,omitempty"`
+	Dir       string         `json:"dir"`
+	Engine    string         `json:"engine,omitempty"`
+	Validated []CheckedModel `json:"validated,omitempty"`
+	OK        bool           `json:"ok"`
+	Items     []CheckItem    `json:"items"`
+	Errors    []string       `json:"errors,omitempty"`
+	Warnings  []string       `json:"warnings,omitempty"`
+}
+
+type CheckedModel struct {
+	Engine string `json:"engine"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
 }
 
 type CheckItem struct {
@@ -39,25 +48,93 @@ type requiredPath struct {
 }
 
 func CheckConfig(cfg config.Config, opts CheckOptions) CheckResult {
-	res := CheckResult{Dir: cfg.ASR.ModelDir, OK: true}
+	switch cfg.ASR.Engine {
+	case asr.EngineSherpa:
+		return checkSherpaConfig(cfg, opts)
+	case asr.EngineWhisper:
+		return checkWhisperConfig(cfg, opts)
+	case asr.EngineAuto:
+		return checkAutoConfig(cfg, opts)
+	default:
+		res := CheckResult{Engine: cfg.ASR.Engine, OK: true}
+		res.addErr(fmt.Sprintf("unknown asr.engine %q", cfg.ASR.Engine))
+		return res
+	}
+}
+
+func checkSherpaConfig(cfg config.Config, opts CheckOptions) CheckResult {
+	res := CheckResult{Dir: cfg.ASR.ModelDir, Engine: asr.EngineSherpa, OK: true}
 	checkRequiredPaths(&res, configuredRequiredPaths(cfg), opts)
 	if err := checkTokens(cfg.TokensPath()); err != nil {
 		res.addErr(err.Error())
 	}
 	checkMetadataAndChecksums(&res, cfg.ASR.ModelDir)
-	if cfg.ASR.Provider != "cpu" {
+	if cfg.ASR.Provider != asr.ProviderCPU {
 		res.addErr("asr.provider must be cpu")
+	}
+	if res.OK {
+		res.Validated = append(res.Validated, CheckedModel{Engine: asr.EngineSherpa, Name: filepath.Base(cfg.ASR.ModelDir), Path: cfg.ASR.ModelDir})
 	}
 	return res
 }
 
+func checkWhisperConfig(cfg config.Config, opts CheckOptions) CheckResult {
+	path := cfg.WhisperModelPath()
+	res := CheckResult{Dir: filepath.Dir(path), Engine: asr.EngineWhisper, OK: true}
+	checkRequiredPaths(&res, []requiredPath{{
+		Name:    cfg.ASR.WhisperModel,
+		Path:    path,
+		MinSize: WhisperModelMinSize(cfg.ASR.WhisperModel),
+	}}, opts)
+	if res.OK {
+		res.Validated = append(res.Validated, CheckedModel{Engine: asr.EngineWhisper, Name: cfg.ASR.WhisperModel, Path: path})
+	}
+	return res
+}
+
+func checkAutoConfig(cfg config.Config, opts CheckOptions) CheckResult {
+	sherpaCfg := cfg
+	sherpaCfg.ASR.Engine = asr.EngineSherpa
+	sherpaCfg.ASR.Provider = asr.ProviderCPU
+	sherpa := checkSherpaConfig(sherpaCfg, opts)
+	whisper := checkWhisperConfig(cfg, opts)
+	res := CheckResult{Dir: cfg.ASR.ModelDir, Engine: asr.EngineAuto, OK: true}
+	if sherpa.OK {
+		mergeSuccessfulCheck(&res, sherpa)
+	}
+	if whisper.OK {
+		mergeSuccessfulCheck(&res, whisper)
+	}
+	if len(res.Validated) > 0 {
+		return res
+	}
+	res.Items = append(res.Items, sherpa.Items...)
+	res.Items = append(res.Items, whisper.Items...)
+	res.addErr(fmt.Sprintf("no usable ASR model; sherpa-onnx: %s; whisper-cpp: %s", strings.Join(sherpa.Errors, "; "), strings.Join(whisper.Errors, "; ")))
+	return res
+}
+
+func mergeSuccessfulCheck(dst *CheckResult, src CheckResult) {
+	dst.Validated = append(dst.Validated, src.Validated...)
+	dst.Items = append(dst.Items, src.Items...)
+	dst.Warnings = append(dst.Warnings, src.Warnings...)
+}
+
 func CheckDir(dir string, opts CheckOptions) CheckResult {
-	res := CheckResult{Dir: dir, OK: true}
+	res := CheckResult{Dir: dir, Engine: asr.EngineSherpa, OK: true}
+	if st, err := os.Stat(dir); err == nil && !st.IsDir() {
+		res.Items = append(res.Items, CheckItem{Path: dir, Message: "not a parakeet model directory"})
+		res.addErr(fmt.Sprintf("%s is not a parakeet model directory", dir))
+		return res
+	}
 	checkRequiredPaths(&res, canonicalRequiredPaths(dir), opts)
 	if err := checkTokens(filepath.Join(dir, "tokens.txt")); err != nil {
 		res.addErr(err.Error())
 	}
 	checkMetadataAndChecksums(&res, dir)
+	if res.OK {
+		res.Validated = append(res.Validated, CheckedModel{Engine: asr.EngineSherpa, Name: filepath.Base(dir), Path: dir})
+	}
 	return res
 }
 
@@ -69,10 +146,10 @@ func checkRequiredPaths(res *CheckResult, files []requiredPath, opts CheckOption
 			item.OK = false
 			item.Message = err.Error()
 			res.addErr(fmt.Sprintf("%s: %v", req.Name, err))
-		} else if st.IsDir() {
+		} else if !st.Mode().IsRegular() {
 			item.OK = false
-			item.Message = "is a directory"
-			res.addErr(req.Name + " is a directory")
+			item.Message = "is not a regular file"
+			res.addErr(req.Name + " is not a regular file")
 		} else {
 			item.Size = st.Size()
 			item.OK = true

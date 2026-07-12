@@ -3,8 +3,10 @@ package model
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"waydict/internal/asr"
 	"waydict/internal/config"
 )
 
@@ -94,6 +96,8 @@ func TestCheckConfigUsesConfiguredModelFiles(t *testing.T) {
 		}
 	}
 	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineSherpa
+	cfg.ASR.Provider = asr.ProviderCPU
 	cfg.ASR.ModelDir = dir
 	cfg.ASR.Encoder = "custom-encoder.onnx"
 	cfg.ASR.Decoder = "custom-decoder.onnx"
@@ -117,6 +121,8 @@ func TestCheckConfigUsesConfiguredModelFiles(t *testing.T) {
 func TestCheckConfigRejectsMissingConfiguredModelFile(t *testing.T) {
 	dir := writeTinyModel(t)
 	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineSherpa
+	cfg.ASR.Provider = asr.ProviderCPU
 	cfg.ASR.ModelDir = dir
 	cfg.ASR.Tokens = "missing-tokens.txt"
 	res := CheckConfig(cfg, CheckOptions{})
@@ -140,6 +146,8 @@ func TestCheckConfigRequiresUnifiedEncoderWeights(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineSherpa
+	cfg.ASR.Provider = asr.ProviderCPU
 	cfg.ASR.ModelDir = dir
 	res := CheckConfig(cfg, CheckOptions{})
 	if res.OK {
@@ -153,6 +161,88 @@ func TestCheckConfigRequiresUnifiedEncoderWeights(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing encoder weights were not reported: %+v", res.Items)
+	}
+}
+
+func TestCheckConfigEngineMatrix(t *testing.T) {
+	tests := []struct {
+		name           string
+		engine         string
+		sherpaPresent  bool
+		whisperPresent bool
+		wantOK         bool
+		wantEngines    []string
+	}{
+		{name: "sherpa present", engine: asr.EngineSherpa, sherpaPresent: true, wantOK: true, wantEngines: []string{asr.EngineSherpa}},
+		{name: "sherpa does not use whisper", engine: asr.EngineSherpa, whisperPresent: true},
+		{name: "whisper present", engine: asr.EngineWhisper, whisperPresent: true, wantOK: true, wantEngines: []string{asr.EngineWhisper}},
+		{name: "whisper does not use sherpa", engine: asr.EngineWhisper, sherpaPresent: true},
+		{name: "auto sherpa", engine: asr.EngineAuto, sherpaPresent: true, wantOK: true, wantEngines: []string{asr.EngineSherpa}},
+		{name: "auto whisper", engine: asr.EngineAuto, whisperPresent: true, wantOK: true, wantEngines: []string{asr.EngineWhisper}},
+		{name: "auto both", engine: asr.EngineAuto, sherpaPresent: true, whisperPresent: true, wantOK: true, wantEngines: []string{asr.EngineSherpa, asr.EngineWhisper}},
+		{name: "auto neither", engine: asr.EngineAuto},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			cfg := config.Defaults()
+			cfg.ASR.Engine = tt.engine
+			if tt.engine == asr.EngineSherpa {
+				cfg.ASR.Provider = asr.ProviderCPU
+			}
+			cfg.ASR.ModelDir = filepath.Join(t.TempDir(), "missing-parakeet")
+			if tt.sherpaPresent {
+				cfg.ASR.ModelDir = writePlausibleModel(t)
+			}
+			if tt.whisperPresent {
+				writePlausibleWhisperModel(t, cfg)
+			}
+			res := CheckConfig(cfg, CheckOptions{StrictSizes: true})
+			if res.OK != tt.wantOK {
+				t.Fatalf("ok = %t, want %t; errors=%v", res.OK, tt.wantOK, res.Errors)
+			}
+			if len(res.Validated) != len(tt.wantEngines) {
+				t.Fatalf("validated = %+v, want engines %v", res.Validated, tt.wantEngines)
+			}
+			for i, want := range tt.wantEngines {
+				if res.Validated[i].Engine != want {
+					t.Fatalf("validated[%d].engine = %q, want %q", i, res.Validated[i].Engine, want)
+				}
+			}
+			if tt.engine == asr.EngineAuto && !tt.wantOK {
+				if len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "sherpa-onnx:") || !strings.Contains(res.Errors[0], "whisper-cpp:") {
+					t.Fatalf("combined auto error = %v", res.Errors)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckConfigRejectsTinyWhisperModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineWhisper
+	path := cfg.WhisperModelPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("tiny"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := CheckConfig(cfg, CheckOptions{StrictSizes: true})
+	if res.OK || len(res.Errors) == 0 || !strings.Contains(strings.Join(res.Errors, " "), "implausibly small") {
+		t.Fatalf("tiny whisper model check = %+v", res)
+	}
+}
+
+func TestCheckDirRejectsWhisperFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ggml-small.en.bin")
+	if err := os.WriteFile(path, []byte("model"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	res := CheckDir(path, CheckOptions{})
+	if res.OK || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "not a parakeet model directory") {
+		t.Fatalf("whisper file check = %+v", res)
 	}
 }
 
@@ -229,4 +319,49 @@ func writeTinyModel(t *testing.T) string {
 		}
 	}
 	return dir
+}
+
+func writePlausibleModel(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, req := range ParakeetUnifiedFP32Files() {
+		path := filepath.Join(dir, req.Name)
+		if req.Name == "tokens.txt" {
+			if err := os.WriteFile(path, []byte("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(req.MinSize); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func writePlausibleWhisperModel(t *testing.T, cfg config.Config) {
+	t.Helper()
+	path := cfg.WhisperModelPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(WhisperModelMinSize(cfg.ASR.WhisperModel)); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

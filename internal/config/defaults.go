@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+
+	"waydict/internal/asr"
 )
 
 const (
@@ -17,13 +19,18 @@ func DefaultPath() string {
 	return filepath.Join(home, ".config", "waydict", "config.toml")
 }
 
+func DefaultModelsRoot() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "waydict", "models")
+}
+
 func Defaults() Config {
 	home, _ := os.UserHomeDir()
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
 		runtimeDir = filepath.Join(os.TempDir(), "waydict-"+userName())
 	}
-	modelRoot := filepath.Join(home, ".local", "share", "waydict", "models")
+	modelRoot := DefaultModelsRoot()
 	stateRoot := filepath.Join(home, ".local", "state", "waydict")
 	return Config{
 		Daemon: Daemon{
@@ -56,13 +63,15 @@ func Defaults() Config {
 			MaxSpeechSeconds:  20,
 		},
 		ASR: ASR{
-			Engine:         "sherpa-onnx",
-			Provider:       "cpu",
+			Engine:         asr.EngineAuto,
+			Provider:       "",
 			ModelType:      "nemo_transducer",
 			DecodingMethod: "greedy_search",
 			NumThreads:     4,
 			MaxActivePaths: 4,
 			BlankPenalty:   0,
+			WhisperModel:   "ggml-large-v3-turbo",
+			GPUDevice:      0,
 			ModelDir:       filepath.Join(modelRoot, DefaultModelName),
 			Encoder:        "encoder.onnx",
 			Decoder:        "decoder.onnx",

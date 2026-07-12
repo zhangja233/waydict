@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"waydict/internal/asr"
 )
 
 func TestLoadExpandValidate(t *testing.T) {
@@ -12,6 +14,7 @@ func TestLoadExpandValidate(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(tmp, "home"))
 	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(tmp, "run"))
 	t.Setenv("SWAYSOCK", filepath.Join(tmp, "sway.sock"))
+	t.Setenv("USER", "tester")
 	path := filepath.Join(tmp, "config.toml")
 	if err := os.WriteFile(path, []byte(`
 [daemon]
@@ -19,6 +22,7 @@ socket = "$XDG_RUNTIME_DIR/waydict/waydict.sock"
 [asr]
 num_threads = 1
 model_dir = "~/models/parakeet"
+whisper_model = "$USER-small.en"
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -32,8 +36,48 @@ model_dir = "~/models/parakeet"
 	if cfg.ASR.ModelDir != filepath.Join(tmp, "home", "models", "parakeet") {
 		t.Fatalf("home was not expanded: %q", cfg.ASR.ModelDir)
 	}
+	if cfg.ASR.WhisperModel != "tester-small.en" {
+		t.Fatalf("whisper model was not expanded: %q", cfg.ASR.WhisperModel)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadAppliesEngineConditionalProviderDefaults(t *testing.T) {
+	tests := []struct {
+		engine string
+		want   string
+	}{
+		{engine: asr.EngineAuto, want: ""},
+		{engine: asr.EngineSherpa, want: asr.ProviderCPU},
+		{engine: asr.EngineWhisper, want: asr.ProviderVulkan},
+	}
+	for _, tc := range tests {
+		t.Run(tc.engine, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte("[asr]\nengine = \""+tc.engine+"\"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ASR.Provider != tc.want {
+				t.Fatalf("provider = %q, want %q", cfg.ASR.Provider, tc.want)
+			}
+		})
+	}
+}
+
+func TestWhisperModelPathUsesSharedModelsRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := Defaults()
+	cfg.ASR.ModelDir = ""
+	got := cfg.WhisperModelPath()
+	want := filepath.Join(DefaultModelsRoot(), "whisper", "ggml-large-v3-turbo.bin")
+	if got != want {
+		t.Fatalf("WhisperModelPath() = %q, want %q", got, want)
 	}
 }
 
@@ -54,6 +98,75 @@ func TestValidateASRDoesNotRequireDaemonRuntimeSettings(t *testing.T) {
 	cfg.ASR.Engine = "other"
 	if err := cfg.ValidateASR(); err == nil {
 		t.Fatal("expected ASR validation error")
+	}
+}
+
+func TestValidateASREngineMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		edit    func(*Config)
+		wantErr bool
+	}{
+		{name: "auto empty provider", edit: func(c *Config) { c.ASR.Provider = "" }},
+		{name: "auto cpu", edit: func(c *Config) { c.ASR.Provider = asr.ProviderCPU }},
+		{name: "auto vulkan", edit: func(c *Config) { c.ASR.Provider = asr.ProviderVulkan }},
+		{name: "auto ignores sherpa shape", edit: func(c *Config) {
+			c.ASR.ModelDir = ""
+			c.ASR.Encoder = ""
+			c.ASR.ModelType = ""
+			c.ASR.NumThreads = 0
+		}},
+		{name: "auto rejects provider", edit: func(c *Config) { c.ASR.Provider = "cuda" }, wantErr: true},
+		{name: "whisper cpu", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineWhisper
+			c.ASR.Provider = asr.ProviderCPU
+			c.ASR.ModelDir = ""
+			c.ASR.Encoder = ""
+		}},
+		{name: "whisper vulkan", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineWhisper
+			c.ASR.Provider = asr.ProviderVulkan
+		}},
+		{name: "whisper empty defaults logically", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineWhisper
+			c.ASR.Provider = ""
+		}},
+		{name: "whisper rejects provider", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineWhisper
+			c.ASR.Provider = "cuda"
+		}, wantErr: true},
+		{name: "whisper requires model", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineWhisper
+			c.ASR.WhisperModel = ""
+		}, wantErr: true},
+		{name: "sherpa cpu", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineSherpa
+			c.ASR.Provider = asr.ProviderCPU
+		}},
+		{name: "sherpa empty defaults logically", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineSherpa
+			c.ASR.Provider = ""
+		}},
+		{name: "sherpa rejects vulkan", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineSherpa
+			c.ASR.Provider = asr.ProviderVulkan
+		}, wantErr: true},
+		{name: "sherpa validates shape", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineSherpa
+			c.ASR.Provider = asr.ProviderCPU
+			c.ASR.ModelDir = ""
+		}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ASR.NumThreads = 1
+			tc.edit(&cfg)
+			err := cfg.ValidateASR()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateASR() error = %v, wantErr %t", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -153,6 +266,8 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()
+			cfg.ASR.Engine = asr.EngineSherpa
+			cfg.ASR.Provider = asr.ProviderCPU
 			cfg.ASR.NumThreads = 1
 			tc.edit(&cfg)
 			if err := cfg.Validate(); err == nil {

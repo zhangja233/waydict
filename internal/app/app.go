@@ -22,12 +22,15 @@ import (
 )
 
 type Dependencies struct {
-	Source         audio.Source
-	SourceFactory  func() (audio.Source, error)
-	ModelChecker   func() error
+	Source        audio.Source
+	SourceFactory func() (audio.Source, error)
+	// ModelChecker validates model files for the given resolved engine.
+	ModelChecker   func(engine string) error
 	ConfigReloader func(context.Context) (config.Config, error)
 	Segmenter      vad.Segmenter
 	Engine         asr.Engine
+	ASRResolution  asr.Resolution
+	ASRFallback    func() (asr.Engine, asr.Resolution, error)
 	Injector       inject.Injector
 	Focus          *swayipc.Client
 	Logger         *slog.Logger
@@ -38,10 +41,12 @@ type App struct {
 	cfg            config.Config
 	source         audio.Source
 	sourceFactory  func() (audio.Source, error)
-	modelChecker   func() error
+	modelChecker   func(engine string) error
 	configReloader func(context.Context) (config.Config, error)
 	segmenter      vad.Segmenter
 	engine         asr.Engine
+	asrResolution  asr.Resolution
+	asrFallback    func() (asr.Engine, asr.Resolution, error)
 	injector       inject.Injector
 	guard          *swayipc.Guard
 	focus          *swayipc.Client
@@ -72,6 +77,11 @@ type segmentJob struct {
 }
 
 func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
+	resolution := deps.ASRResolution
+	if resolution.Engine == "" && deps.Engine != nil {
+		resolution.Engine = deps.Engine.Name()
+		resolution.Provider = cfg.ASR.Provider
+	}
 	a := &App{
 		cfg:            cfg,
 		source:         deps.Source,
@@ -80,6 +90,8 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		configReloader: deps.ConfigReloader,
 		segmenter:      deps.Segmenter,
 		engine:         deps.Engine,
+		asrResolution:  resolution,
+		asrFallback:    deps.ASRFallback,
 		injector:       deps.Injector,
 		focus:          deps.Focus,
 		logger:         deps.Logger,
@@ -106,11 +118,14 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		},
 		VAD: api.VADStatus{Engine: vadEngine},
 		ASR: api.ASRStatus{
-			Engine:     cfg.ASR.Engine,
-			Model:      config.DefaultModelName,
-			Provider:   cfg.ASR.Provider,
-			NumThreads: cfg.ASR.NumThreads,
-			Loaded:     deps.Engine != nil && deps.Engine.Loaded(),
+			Engine:           cfg.ASR.Engine,
+			Model:            resolvedModelName(cfg, resolution),
+			Provider:         cfg.ASR.Provider,
+			ResolvedEngine:   resolution.Engine,
+			ResolvedProvider: resolution.Provider,
+			FallbackReason:   resolution.FallbackReason,
+			NumThreads:       cfg.ASR.NumThreads,
+			Loaded:           deps.Engine != nil && deps.Engine.Loaded(),
 		},
 		Injection: api.InjectionStatus{
 			Engine: cfg.Injection.Engine,
@@ -206,19 +221,10 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 		}
 	}
 	if a.engine != nil && !a.engine.Loaded() {
-		if a.modelChecker != nil {
-			a.logDebug("checking model", "session", session)
-			if err := a.modelChecker(); err != nil {
-				a.recordError(api.StateIdle, "model_invalid", err)
-				return withCode("model_invalid", err)
-			}
-		}
-		a.logInfo("asr load start", "session", session)
-		if err := a.engine.Load(ctx); err != nil {
+		if err := a.loadASR(ctx, session); err != nil {
 			a.recordError(api.StateIdle, "model_invalid", err)
 			return withCode("model_invalid", err)
 		}
-		a.logInfo("asr load complete", "session", session)
 	}
 	if a.guard != nil && a.cfg.Sway.FocusCheck {
 		if err := a.guard.CaptureStart(ctx); err != nil {
@@ -405,6 +411,7 @@ func reloadRequiresRestart(old, next config.Config) error {
 	if old.VAD != next.VAD {
 		return fmt.Errorf("VAD changes require restart")
 	}
+	// Resolution is startup-only; swapping engines would race the ASR worker.
 	if old.ASR != next.ASR {
 		return fmt.Errorf("ASR changes require restart")
 	}
@@ -418,6 +425,115 @@ func reloadRequiresRestart(old, next config.Config) error {
 		return fmt.Errorf("Sway changes require restart")
 	}
 	return nil
+}
+
+func (a *App) loadASR(ctx context.Context, session uint64) error {
+	engine := a.engine
+	resolution := a.asrResolution
+	if resolution.Engine == asr.EngineSherpa {
+		if err := validateResolvedSherpaConfig(a.cfg); err != nil {
+			return err
+		}
+		if a.modelChecker != nil {
+			a.logDebug("checking model", "session", session)
+			if err := a.modelChecker(resolution.Engine); err != nil {
+				return err
+			}
+		}
+	}
+	a.logInfo("asr load start", "session", session, "engine", resolution.Engine, "provider", resolution.Provider)
+	if err := engine.Load(ctx); err != nil {
+		if a.cfg.ASR.Engine != asr.EngineAuto || resolution.Engine != asr.EngineWhisper || a.asrFallback == nil {
+			return err
+		}
+		a.logWarn("whisper-cpp load failed", "error", err)
+		_ = engine.Close()
+		fallback, fallbackResolution, fallbackErr := a.asrFallback()
+		if fallbackErr != nil {
+			return fmt.Errorf("whisper-cpp load failed: %v; sherpa fallback resolution failed: %w", err, fallbackErr)
+		}
+		fallbackResolution.FallbackReason = fmt.Sprintf("whisper-cpp load failed: %v", err)
+		a.logWarn("falling back to sherpa-onnx", "reason", fallbackResolution.FallbackReason)
+		a.setASREngine(fallback, fallbackResolution)
+		engine = fallback
+		resolution = fallbackResolution
+		if configErr := validateResolvedSherpaConfig(a.cfg); configErr != nil {
+			return configErr
+		}
+		if a.modelChecker != nil {
+			a.logDebug("checking model", "session", session)
+			if checkErr := a.modelChecker(asr.EngineSherpa); checkErr != nil {
+				return checkErr
+			}
+		}
+		a.logInfo("asr load start", "session", session, "engine", resolution.Engine, "provider", resolution.Provider)
+		if fallbackErr = engine.Load(ctx); fallbackErr != nil {
+			return fmt.Errorf("sherpa fallback load failed: %w", fallbackErr)
+		}
+	}
+	a.confirmASRBackend(engine, resolution)
+	a.logInfo("asr load complete", "session", session, "engine", a.asrResolution.Engine, "provider", a.asrResolution.Provider, "gpu_name", a.asrResolution.GPUName)
+	return nil
+}
+
+func validateResolvedSherpaConfig(cfg config.Config) error {
+	cfg.ASR.Engine = asr.EngineSherpa
+	cfg.ASR.Provider = asr.ProviderCPU
+	return cfg.ValidateASR()
+}
+
+func resolvedModelName(cfg config.Config, resolution asr.Resolution) string {
+	if resolution.Engine == asr.EngineWhisper {
+		return cfg.ASR.WhisperModel
+	}
+	return config.DefaultModelName
+}
+
+// CloseASR releases the current engine's native resources (VRAM for whisper).
+// Call after the control server stops; the worker has exited by then.
+func (a *App) CloseASR() error {
+	a.mu.Lock()
+	engine := a.engine
+	a.engine = nil
+	a.status.ASR.Loaded = false
+	a.mu.Unlock()
+	if engine == nil {
+		return nil
+	}
+	return engine.Close()
+}
+
+func (a *App) setASREngine(engine asr.Engine, resolution asr.Resolution) {
+	a.mu.Lock()
+	a.engine = engine
+	a.asrResolution = resolution
+	a.status.ASR.ResolvedEngine = resolution.Engine
+	a.status.ASR.ResolvedProvider = resolution.Provider
+	a.status.ASR.GPUName = resolution.GPUName
+	a.status.ASR.FallbackReason = resolution.FallbackReason
+	a.status.ASR.Loaded = engine != nil && engine.Loaded()
+	a.mu.Unlock()
+}
+
+func (a *App) confirmASRBackend(engine asr.Engine, resolution asr.Resolution) {
+	if resolution.Engine != asr.EngineWhisper {
+		a.setASREngine(engine, resolution)
+		return
+	}
+	reporter, ok := engine.(asr.BackendReporter)
+	name, gpu := "", false
+	if ok {
+		name, gpu = reporter.ActiveBackend()
+	}
+	if gpu {
+		resolution.Provider = asr.ProviderVulkan
+		resolution.GPUName = name
+	} else if resolution.Provider == asr.ProviderVulkan {
+		a.logWarn("whisper-cpp backend downgraded", "requested_provider", asr.ProviderVulkan, "reported_backend", name)
+		resolution.Provider = asr.ProviderCPU
+		resolution.GPUName = ""
+	}
+	a.setASREngine(engine, resolution)
 }
 
 func (a *App) Toggle(ctx context.Context) error {

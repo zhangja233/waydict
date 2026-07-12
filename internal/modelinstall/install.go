@@ -142,6 +142,60 @@ func InstallSileroVAD(ctx context.Context, opts InstallOptions) (string, error) 
 	return final, nil
 }
 
+func InstallWhisper(ctx context.Context, id string, opts InstallOptions) (string, error) {
+	asset, ok := model.WhisperAssetByID(id)
+	if !ok {
+		return "", fmt.Errorf("unknown whisper model %q", id)
+	}
+	return installWhisperAsset(ctx, asset, opts)
+}
+
+func installWhisperAsset(ctx context.Context, asset model.WhisperAsset, opts InstallOptions) (string, error) {
+	base, err := modelRoot(opts.Dir)
+	if err != nil {
+		return "", err
+	}
+	whisperDir := filepath.Join(base, "whisper")
+	if err := os.MkdirAll(whisperDir, 0755); err != nil {
+		return "", err
+	}
+	tmp, err := os.MkdirTemp(whisperDir, ".download-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	staged := filepath.Join(tmp, asset.File)
+	url := opts.URL
+	if url == "" {
+		url = asset.URL
+	}
+	if err := download(ctx, url, staged); err != nil {
+		return "", err
+	}
+	st, err := os.Stat(staged)
+	if err != nil {
+		return "", err
+	}
+	if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("downloaded whisper model is not a regular file")
+	}
+	if st.Size() != asset.Size {
+		return "", fmt.Errorf("downloaded whisper model has size %d, want %d", st.Size(), asset.Size)
+	}
+	got, err := fileSHA256(staged)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(got, asset.SHA256) {
+		return "", fmt.Errorf("checksum mismatch for %s: got %s, want %s", asset.File, got, asset.SHA256)
+	}
+	final := filepath.Join(whisperDir, asset.File)
+	if err := os.Rename(staged, final); err != nil {
+		return "", err
+	}
+	return final, nil
+}
+
 func modelRoot(dir string) (string, error) {
 	if dir != "" {
 		return dir, nil

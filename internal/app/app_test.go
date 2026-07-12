@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,6 +64,87 @@ func TestStatusReportsVADEngine(t *testing.T) {
 	})
 	if got := app.Status(ctx).VAD.Engine; got != "energy" {
 		t.Fatalf("vad engine = %q, want energy", got)
+	}
+}
+
+func TestStatusJSONIncludesResolvedASRFields(t *testing.T) {
+	cfg := config.Defaults()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Engine: &FakeEngine{},
+		ASRResolution: asr.Resolution{
+			Engine:         asr.EngineSherpa,
+			Provider:       asr.ProviderCPU,
+			FallbackReason: "gpu unavailable",
+		},
+	})
+	data, err := json.Marshal(app.Status(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		ASR map[string]any `json:"asr"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"resolved_engine", "resolved_provider", "gpu_name", "fallback_reason"} {
+		if _, ok := payload.ASR[field]; !ok {
+			t.Fatalf("ASR status JSON missing %q: %s", field, data)
+		}
+	}
+}
+
+func TestWhisperBackendDowngradeUpdatesStatus(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineWhisper
+	cfg.ASR.Provider = asr.ProviderVulkan
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &backendEngine{backend: "cpu", gpu: false}
+	app := New(ctx, cfg, Dependencies{
+		Engine: engine,
+		ASRResolution: asr.Resolution{
+			Engine:   asr.EngineWhisper,
+			Provider: asr.ProviderVulkan,
+			GPUName:  "probed gpu",
+		},
+	})
+	if err := app.loadASR(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	status := app.Status(ctx).ASR
+	if status.ResolvedProvider != asr.ProviderCPU || status.GPUName != "" {
+		t.Fatalf("ASR status = %+v, want reported CPU backend", status)
+	}
+}
+
+func TestAutoWhisperLoadFailureFallsBackToSherpa(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	whisper := &loadErrorEngine{err: errors.New("gpu load failed")}
+	sherpa := &FakeEngine{}
+	fallbackCalls := 0
+	app := New(ctx, cfg, Dependencies{
+		Engine: whisper,
+		ASRResolution: asr.Resolution{
+			Engine:   asr.EngineWhisper,
+			Provider: asr.ProviderVulkan,
+		},
+		ASRFallback: func() (asr.Engine, asr.Resolution, error) {
+			fallbackCalls++
+			return sherpa, asr.Resolution{Engine: asr.EngineSherpa, Provider: asr.ProviderCPU}, nil
+		},
+	})
+	if err := app.loadASR(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	status := app.Status(ctx).ASR
+	if fallbackCalls != 1 || app.engine != sherpa || status.ResolvedEngine != asr.EngineSherpa || status.FallbackReason == "" {
+		t.Fatalf("fallback calls=%d engine=%T status=%+v", fallbackCalls, app.engine, status)
 	}
 }
 
@@ -181,9 +263,13 @@ func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 		{
 			name: "model",
 			deps: Dependencies{
-				ModelChecker: func() error { return errors.New("missing files") },
+				ModelChecker: func(string) error { return errors.New("missing files") },
 				Engine:       &FakeEngine{Text: "hello"},
-				Injector:     &MemoryInjector{},
+				ASRResolution: asr.Resolution{
+					Engine:   asr.EngineSherpa,
+					Provider: asr.ProviderCPU,
+				},
+				Injector: &MemoryInjector{},
 			},
 			want: "model_invalid",
 		},
@@ -264,15 +350,23 @@ func TestReloadConfigRejectsRuntimeChanges(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
 	next := cfg
+	next.ASR.Engine = asr.EngineWhisper
+	next.ASR.Provider = asr.ProviderVulkan
 	next.ASR.ModelDir = filepath.Join(t.TempDir(), "other-model")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	engine := &FakeEngine{}
 	app := New(ctx, cfg, Dependencies{
+		Engine:         engine,
+		ASRResolution:  asr.Resolution{Engine: asr.EngineSherpa, Provider: asr.ProviderCPU},
 		ConfigReloader: func(context.Context) (config.Config, error) { return next, nil },
 	})
 	resp := app.HandleControl(ctx, control.NewRequest("reload_config", nil))
 	if resp.OK || resp.Error == nil || resp.Error.Code != "restart_required" {
 		t.Fatalf("response error = %+v, want restart_required", resp.Error)
+	}
+	if app.engine != engine || app.Status(ctx).ASR.ResolvedEngine != asr.EngineSherpa {
+		t.Fatal("reload swapped the resolved ASR engine")
 	}
 }
 
@@ -967,6 +1061,32 @@ func (s *startFailSource) Close() {
 type recordingEngine struct {
 	FakeEngine
 	seen chan asr.AudioSegment
+}
+
+type backendEngine struct {
+	FakeEngine
+	backend string
+	gpu     bool
+}
+
+type loadErrorEngine struct {
+	err error
+}
+
+func (e *loadErrorEngine) Name() string { return asr.EngineWhisper }
+
+func (e *loadErrorEngine) Load(context.Context) error { return e.err }
+
+func (e *loadErrorEngine) Close() error { return nil }
+
+func (e *loadErrorEngine) Loaded() bool { return false }
+
+func (e *loadErrorEngine) Transcribe(context.Context, asr.AudioSegment) (asr.Transcript, error) {
+	return asr.Transcript{}, e.err
+}
+
+func (e *backendEngine) ActiveBackend() (string, bool) {
+	return e.backend, e.gpu
 }
 
 func (r *recordingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.Transcript, error) {

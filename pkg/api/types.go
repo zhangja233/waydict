@@ -57,12 +57,19 @@ type VADStatus struct {
 }
 
 type ASRStatus struct {
-	Engine     string  `json:"engine"`
-	Model      string  `json:"model"`
-	Provider   string  `json:"provider"`
-	NumThreads int     `json:"num_threads"`
-	Loaded     bool    `json:"loaded"`
-	LastRTF    float64 `json:"last_rtf"`
+	Engine         string `json:"engine"`
+	Model          string `json:"model"`
+	Provider       string `json:"provider"`
+	ResolvedEngine string `json:"resolved_engine"`
+	// ResolvedProvider is the requested provider until Loaded is true; after
+	// load it reflects the backend the native library actually selected, and
+	// GPUName is only set once a GPU backend is confirmed.
+	ResolvedProvider string  `json:"resolved_provider"`
+	GPUName          string  `json:"gpu_name"`
+	FallbackReason   string  `json:"fallback_reason"`
+	NumThreads       int     `json:"num_threads"`
+	Loaded           bool    `json:"loaded"`
+	LastRTF          float64 `json:"last_rtf"`
 }
 
 type InjectionStatus struct {

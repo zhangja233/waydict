@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -76,7 +77,7 @@ func usage(w io.Writer) {
   waydict status [--json]
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
-  waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|all> [--dir PATH]
+  waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-small-en|whisper-medium-en|whisper-large-v3-turbo|all> [--dir PATH]
   waydict bench --file PATH [--repeat N]
   waydict doctor`)
 }
@@ -100,7 +101,12 @@ func runDaemon(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := app.RunDaemonWithOptions(ctx, cfg, app.DaemonOptions{ConfigPath: *configPath, LogLevelOverride: *logLevel}); err != nil {
+	if err := app.RunDaemonWithOptions(ctx, cfg, app.DaemonOptions{
+		ConfigPath:       *configPath,
+		LogLevelOverride: *logLevel,
+		NewWhisper:       newWhisperEngineHook,
+		ProbeGPU:         probeGPUHook,
+	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitForErr(err)
 	}
@@ -219,16 +225,28 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 }
 
 func transcribeFile(ctx context.Context, cfg config.Config, file string, stderr io.Writer) (asr.Transcript, int) {
-	if err := validateModelForUseFn(cfg); err != nil {
+	engine, resolution, err := resolveASREngine(cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return asr.Transcript{}, exitcode.ModelInvalid
+	}
+	if err := validateResolvedASRForUse(cfg, resolution); err != nil {
+		_ = engine.Close()
 		fmt.Fprintln(stderr, err)
 		return asr.Transcript{}, exitcode.ModelInvalid
 	}
 	wav, err := readAudioFileFunc(file)
 	if err != nil {
+		_ = engine.Close()
 		fmt.Fprintln(stderr, err)
 		return asr.Transcript{}, exitcode.Generic
 	}
-	engine := newASREngine(cfg.ASR)
+	engine, resolution, err = loadResolvedASR(ctx, cfg, engine, resolution, stderr)
+	if err != nil {
+		_ = engine.Close()
+		fmt.Fprintln(stderr, err)
+		return asr.Transcript{}, exitcode.ModelInvalid
+	}
 	defer engine.Close()
 	seg := asr.AudioSegment{
 		ID:         "file",
@@ -266,7 +284,120 @@ var (
 	readAudioFileFunc     = audio.ReadFile
 	newASREngine          = func(cfg config.ASR) asr.Engine { return sherpaasr.New(cfg) }
 	validateModelForUseFn = validateModelForUse
+	newWhisperEngineHook  func(modelPath string, device, threads int, useGPU bool) (asr.Engine, error)
+	probeGPUHook          func() (string, error)
 )
+
+func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
+	provider := cfg.ASR.Provider
+	if provider == "" && cfg.ASR.Engine == asr.EngineWhisper {
+		provider = asr.ProviderVulkan
+	}
+	sherpaCfg := cfg.ASR
+	sherpaCfg.Provider = asr.ProviderCPU
+	deps := asr.ResolverDeps{
+		NewSherpa: func() asr.Engine { return newASREngine(sherpaCfg) },
+		ProbeGPU:  probeGPUHook,
+		WhisperModelPath: func() (string, error) {
+			path := cfg.WhisperModelPath()
+			info, err := os.Stat(path)
+			if err != nil {
+				return "", err
+			}
+			if !info.Mode().IsRegular() {
+				return "", fmt.Errorf("%s is not a regular file", path)
+			}
+			return path, nil
+		},
+	}
+	if hook := newWhisperEngineHook; hook != nil {
+		deps.NewWhisper = func(modelPath string, device int, useGPU bool) (asr.Engine, error) {
+			return hook(modelPath, device, cfg.ASR.NumThreads, useGPU)
+		}
+	}
+	engine, resolution, err := asr.Resolve(cfg.ASR.Engine, provider, cfg.ASR.GPUDevice, deps)
+	if err != nil {
+		return nil, asr.Resolution{}, err
+	}
+	if resolution.Engine == asr.EngineSherpa {
+		if err := validateResolvedSherpaConfig(cfg); err != nil {
+			_ = engine.Close()
+			return nil, resolution, err
+		}
+	}
+	return engine, resolution, nil
+}
+
+func loadResolvedASR(ctx context.Context, cfg config.Config, engine asr.Engine, resolution asr.Resolution, stderr io.Writer) (asr.Engine, asr.Resolution, error) {
+	if err := engine.Load(ctx); err != nil {
+		if cfg.ASR.Engine != asr.EngineAuto || resolution.Engine != asr.EngineWhisper {
+			return engine, resolution, err
+		}
+		fmt.Fprintf(stderr, "whisper-cpp load failed: %v\n", err)
+		_ = engine.Close()
+		fallbackCfg := cfg
+		fallbackCfg.ASR.Engine = asr.EngineSherpa
+		fallbackCfg.ASR.Provider = asr.ProviderCPU
+		fallback, fallbackResolution, fallbackErr := resolveASREngine(fallbackCfg)
+		if fallbackErr != nil {
+			return engine, resolution, fmt.Errorf("sherpa fallback resolution failed: %w", fallbackErr)
+		}
+		fallbackResolution.FallbackReason = fmt.Sprintf("whisper-cpp load failed: %v", err)
+		fmt.Fprintf(stderr, "falling back to sherpa-onnx: %s\n", fallbackResolution.FallbackReason)
+		engine = fallback
+		resolution = fallbackResolution
+		if configErr := validateResolvedSherpaConfig(fallbackCfg); configErr != nil {
+			return engine, resolution, configErr
+		}
+		if checkErr := validateModelForUseFn(fallbackCfg); checkErr != nil {
+			return engine, resolution, checkErr
+		}
+		if fallbackErr = engine.Load(ctx); fallbackErr != nil {
+			return engine, resolution, fmt.Errorf("sherpa fallback load failed: %w", fallbackErr)
+		}
+	}
+	resolution = confirmResolvedBackend(engine, resolution, stderr)
+	return engine, resolution, nil
+}
+
+func validateResolvedASRForUse(cfg config.Config, resolution asr.Resolution) error {
+	if resolution.Engine != asr.EngineSherpa {
+		return nil
+	}
+	if err := validateResolvedSherpaConfig(cfg); err != nil {
+		return err
+	}
+	// Pin the copy so the model check validates the resolved engine, not auto.
+	cfg.ASR.Engine = asr.EngineSherpa
+	cfg.ASR.Provider = asr.ProviderCPU
+	return validateModelForUseFn(cfg)
+}
+
+func validateResolvedSherpaConfig(cfg config.Config) error {
+	cfg.ASR.Engine = asr.EngineSherpa
+	cfg.ASR.Provider = asr.ProviderCPU
+	return cfg.ValidateASR()
+}
+
+func confirmResolvedBackend(engine asr.Engine, resolution asr.Resolution, stderr io.Writer) asr.Resolution {
+	if resolution.Engine != asr.EngineWhisper {
+		return resolution
+	}
+	reporter, ok := engine.(asr.BackendReporter)
+	name, gpu := "", false
+	if ok {
+		name, gpu = reporter.ActiveBackend()
+	}
+	if gpu {
+		resolution.Provider = asr.ProviderVulkan
+		resolution.GPUName = name
+	} else if resolution.Provider == asr.ProviderVulkan {
+		fmt.Fprintf(stderr, "whisper-cpp backend downgraded to cpu (reported backend %q)\n", name)
+		resolution.Provider = asr.ProviderCPU
+		resolution.GPUName = ""
+	}
+	return resolution
+}
 
 func prepareInjection(ctx context.Context, cfg config.Config, stderr io.Writer) (*preparedInjection, error) {
 	w := newInjector(cfg.Injection)
@@ -296,6 +427,13 @@ func (p *preparedInjection) TypeText(ctx context.Context, text string) error {
 	}
 	return p.injector.TypeText(ctx, text)
 }
+
+var (
+	installParakeetUnifiedFP32 = modelinstall.InstallParakeetUnifiedFP32
+	installParakeetV3Int8      = modelinstall.InstallParakeetV3Int8
+	installSileroVAD           = modelinstall.InstallSileroVAD
+	installWhisper             = modelinstall.InstallWhisper
+)
 
 func runModel(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -346,13 +484,14 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitcode.Success
 	case "install":
-		const installUsage = "usage: waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|all> [--dir PATH]"
+		const installUsage = "usage: waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-small-en|whisper-medium-en|whisper-large-v3-turbo|all> [--dir PATH]"
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, installUsage)
 			return exitcode.Usage
 		}
 		name := args[1]
-		if name != model.ParakeetUnifiedFP32ID && name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" {
+		_, whisperModel := model.WhisperAssetByID(name)
+		if name != model.ParakeetUnifiedFP32ID && name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" && !whisperModel {
 			fmt.Fprintln(stderr, installUsage)
 			return exitcode.Usage
 		}
@@ -370,11 +509,13 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 			)
 			switch kind {
 			case model.ParakeetUnifiedFP32ID:
-				path, err = modelinstall.InstallParakeetUnifiedFP32(ctx, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installParakeetUnifiedFP32(ctx, modelinstall.InstallOptions{Dir: *dir})
 			case "parakeet-v3-int8":
-				path, err = modelinstall.InstallParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
 			case "silero-vad":
-				path, err = modelinstall.InstallSileroVAD(ctx, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installSileroVAD(ctx, modelinstall.InstallOptions{Dir: *dir})
+			default:
+				path, err = installWhisper(ctx, kind, modelinstall.InstallOptions{Dir: *dir})
 			}
 			if err != nil {
 				fmt.Fprintf(stderr, "%s: %v\n", kind, err)
@@ -387,6 +528,7 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		if name == "all" {
 			ok = install(model.ParakeetUnifiedFP32ID) && ok
 			ok = install("silero-vad") && ok
+			ok = install(model.WhisperLargeV3TurboID) && ok
 		} else {
 			ok = install(name)
 		}
@@ -425,25 +567,34 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.ModelInvalid
 	}
-	if err := validateModelForUseFn(cfg); err != nil {
+	engine, resolution, err := resolveASREngine(cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitcode.ModelInvalid
+	}
+	if err := validateResolvedASRForUse(cfg, resolution); err != nil {
+		_ = engine.Close()
 		fmt.Fprintln(stderr, err)
 		return exitcode.ModelInvalid
 	}
 	wav, err := readAudioFileFunc(*file)
 	if err != nil {
+		_ = engine.Close()
 		fmt.Fprintln(stderr, err)
 		return exitcode.Generic
 	}
 	if len(wav.Samples) == 0 || wav.Duration <= 0 {
+		_ = engine.Close()
 		fmt.Fprintln(stderr, "audio file has no samples")
 		return exitcode.Generic
 	}
-	engine := newASREngine(cfg.ASR)
-	defer engine.Close()
-	if err := engine.Load(context.Background()); err != nil {
+	engine, resolution, err = loadResolvedASR(context.Background(), cfg, engine, resolution, stderr)
+	if err != nil {
+		_ = engine.Close()
 		fmt.Fprintln(stderr, err)
 		return exitcode.ModelInvalid
 	}
+	defer engine.Close()
 	seg := asr.AudioSegment{
 		ID:         "bench",
 		Samples:    wav.Samples,
@@ -470,14 +621,19 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		return exitcode.Generic
 	}
 	decodeSeconds := total.Seconds() / float64(*repeat)
+	benchModel := filepath.Base(cfg.ASR.ModelDir)
+	if resolution.Engine == asr.EngineWhisper {
+		benchModel = cfg.ASR.WhisperModel
+	}
 	out := map[string]any{
 		"file":           *file,
 		"audio_seconds":  audioDuration.Seconds(),
 		"decode_seconds": decodeSeconds,
 		"rtf":            decodeSeconds / audioDuration.Seconds(),
 		"threads":        cfg.ASR.NumThreads,
-		"provider":       cfg.ASR.Provider,
-		"model":          config.DefaultModelName,
+		"engine":         resolution.Engine,
+		"provider":       resolution.Provider,
+		"model":          benchModel,
 		"rss_peak_bytes": peakRSS(),
 	}
 	printJSON(stdout, out)
@@ -506,10 +662,26 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	check("config", cfg.Validate())
+	fmt.Fprintf(stdout, "INFO %-18s engine=%s provider=%s\n", "asr configured", cfg.ASR.Engine, cfg.ASR.Provider)
+	doctorEngine, resolution, resolutionErr := resolveASREngine(cfg)
+	if resolutionErr != nil {
+		failures++
+		fmt.Fprintf(stdout, "FAIL %-18s %v\n", "asr resolution", resolutionErr)
+	} else if resolution.FallbackReason != "" {
+		fmt.Fprintf(stdout, "WARN %-18s engine=%s provider=%s reason=%s\n", "asr resolution", resolution.Engine, resolution.Provider, resolution.FallbackReason)
+	} else {
+		fmt.Fprintf(stdout, "OK   %-18s engine=%s provider=%s\n", "asr resolution", resolution.Engine, resolution.Provider)
+	}
+	if resolutionErr == nil {
+		defer doctorEngine.Close()
+	}
+	printVulkanICDHint(stdout)
 	check("WAYLAND_DISPLAY", envPresent("WAYLAND_DISPLAY"))
 	check("SWAYSOCK", envPresent("SWAYSOCK"))
 	check("XDG_RUNTIME_DIR", envPresent("XDG_RUNTIME_DIR"))
-	check("sherpa build", featureEnabled(buildinfo.SherpaEnabled, "rebuild with -tags sherpa and CGO_ENABLED=1"))
+	if resolutionErr == nil && resolution.Engine == asr.EngineSherpa {
+		check("sherpa build", featureEnabled(buildinfo.SherpaEnabled, "rebuild with -tags sherpa and CGO_ENABLED=1"))
+	}
 	check("PipeWire build", featureEnabled(buildinfo.PipeWireEnabled, "rebuild with -tags pipewire and libpipewire-0.3 development files"))
 	check("wtype", inject.NewWtype(cfg.Injection).Available(context.Background()))
 	check("PipeWire", pipewire.Check())
@@ -517,9 +689,14 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	check("Sway IPC", focus.Available(fctx))
 	cancel()
-	res := model.CheckConfig(cfg, model.CheckOptions{StrictSizes: true})
-	if !printDoctorModel(stdout, res) {
-		failures++
+	if resolutionErr == nil {
+		modelCfg := cfg
+		modelCfg.ASR.Engine = resolution.Engine
+		modelCfg.ASR.Provider = resolution.Provider
+		res := model.CheckConfig(modelCfg, model.CheckOptions{StrictSizes: true})
+		if !printDoctorModel(stdout, res) {
+			failures++
+		}
 	}
 	printDoctorVAD(stdout, model.CheckVADConfig(cfg))
 	fmt.Fprintf(stdout, "INFO %-18s %s/%s cgo=%s goroutines=%d\n", "go", runtime.GOOS, runtime.GOARCH, os.Getenv("CGO_ENABLED"), runtime.NumGoroutine())
@@ -558,6 +735,22 @@ func printStatus(w io.Writer, st api.Status) {
 		mode = string(*st.Mode)
 	}
 	fmt.Fprintf(w, "state=%s mode=%s model_loaded=%t vad=%s audio=%s capturing=%t overruns=%d\n", st.State, mode, st.ASR.Loaded, st.VAD.Engine, st.Audio.Backend, st.Audio.Capturing, st.Audio.Overruns)
+	gpu := st.ASR.GPUName
+	if gpu == "" {
+		gpu = "none"
+	}
+	engine := st.ASR.ResolvedEngine
+	if engine == "" {
+		engine = st.ASR.Engine
+	}
+	provider := st.ASR.ResolvedProvider
+	if provider == "" {
+		provider = st.ASR.Provider
+	}
+	fmt.Fprintf(w, "asr=%s provider=%s gpu=%s configured=%s/%s\n", engine, provider, gpu, st.ASR.Engine, st.ASR.Provider)
+	if st.ASR.FallbackReason != "" {
+		fmt.Fprintf(w, "asr_fallback=%s\n", st.ASR.FallbackReason)
+	}
 	if st.LastError != nil {
 		fmt.Fprintf(w, "last_error=%s: %s\n", st.LastError.Code, st.LastError.Message)
 	}
@@ -566,7 +759,23 @@ func printStatus(w io.Writer, st api.Status) {
 	}
 }
 
+func printVulkanICDHint(w io.Writer) {
+	for _, dir := range []string{"/run/opengl-driver/share/vulkan/icd.d", "/usr/share/vulkan/icd.d"} {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			fmt.Fprintf(w, "INFO %-18s found %s\n", "Vulkan ICD", dir)
+			return
+		}
+	}
+	fmt.Fprintf(w, "INFO %-18s no ICD directory found; install a Vulkan driver if GPU ASR is desired\n", "Vulkan ICD")
+}
+
 func printModelCheck(w io.Writer, res model.CheckResult) {
+	if res.Engine != "" {
+		fmt.Fprintf(w, "INFO engine=%s\n", res.Engine)
+	}
+	for _, checked := range res.Validated {
+		fmt.Fprintf(w, "OK   engine-model %s %s %s\n", checked.Engine, checked.Name, checked.Path)
+	}
 	for _, item := range res.Items {
 		prefix := "OK"
 		if !item.OK {

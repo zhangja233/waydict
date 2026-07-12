@@ -14,22 +14,45 @@ Check that the PipeWire user service is running and that your session has microp
 
 ## High Latency
 
-Run `waydict bench --file sample.wav --repeat 3`, then adjust `[asr].num_threads`. Lower `[vad].min_silence_ms` only if words are not being cut off. The default endpoint delay is intentionally conservative.
+Run `waydict bench --file sample.wav --repeat 3`. For sherpa-onnx, adjust `[asr].num_threads`; for Whisper, compare models in [gpu.md](gpu.md). Lower `[vad].min_silence_ms` only if words are not being cut off. The default endpoint delay is intentionally conservative.
 
 ## High Memory Use
 
-The Parakeet Unified FP32 model is large. Expect materially higher RSS than the older INT8 package. Reduce other memory pressure before starting the daemon and avoid running multiple daemons.
+The Parakeet Unified FP32 model is large. Expect materially higher RSS than the older INT8 package. Vulkan Whisper also keeps roughly 0.9–2.3 GB resident in VRAM depending on the model. Reduce other memory pressure before starting the daemon and avoid running multiple daemons.
+
+## Daemon Says It Fell Back to Sherpa
+
+With `engine = "auto"`, this is expected when the Whisper build or model, a Vulkan ICD, or render-node access is unavailable. Run `waydict doctor` and read the `asr resolution` line. While the daemon is running, `waydict status --json` exposes the same detail as `asr.fallback_reason` (`FallbackReason` in the API type), plus `resolved_engine`, `resolved_provider`, and `gpu_name`.
+
+Set `engine = "whisper-cpp"` and `provider = "vulkan"` temporarily when you want a resolver or load error to be fatal instead of switching engines. Set `engine = "sherpa-onnx"` and `provider = "cpu"` when CPU recognition is intentional.
+
+## Whisper Model Missing
+
+The default auto/GPU and forced-Whisper configuration uses `ggml-large-v3-turbo`:
+
+```sh
+waydict model install whisper-large-v3-turbo
+waydict model check
+```
+
+Restart the daemon after installation. `auto` can still use sherpa-onnx when its Parakeet model is installed; forced `whisper-cpp` fails hard when its selected model is missing.
+
+## GPU Present but Resolution Says CPU
+
+The GPU probe requires both a Vulkan ICD JSON file and read/write access to a `/dev/dri/renderD*` node. It searches `/run/opengl-driver/share/vulkan/icd.d` on NixOS, then `/usr/share/vulkan/icd.d` and `/etc/vulkan/icd.d`. Check that the driver installed an ICD and that the daemon user has the render-node group or ACL; a new group membership may require a new login session.
+
+`waydict doctor` prints the configured engine, provisional resolution outcome, fallback reason, and an ICD hint. After model load, daemon status is authoritative: `resolved_engine = "whisper-cpp"` with `resolved_provider = "cpu"` means the native backend downgraded after the probe; the daemon logs `whisper-cpp backend downgraded`. A forced `whisper-cpp` configuration with `provider = "cpu"` deliberately reports CPU and does not probe Vulkan. See [gpu.md](gpu.md) for the complete setup.
 
 ## Missing Model Files
 
 `waydict doctor` reports which models are missing. To (re)install both:
 
 ```sh
-waydict model install all   # or individually: parakeet-unified-en-0.6b-fp32 / silero-vad
+waydict model install all   # Parakeet, default Whisper, and silero VAD
 waydict model check
 ```
 
-A missing **ASR** model is fatal — the daemon exits on startup. A missing **silero VAD** model is not: the daemon keeps running but degrades to the energy VAD (see next section).
+A forced engine's missing **ASR** model is fatal. In `auto`, either a usable Vulkan Whisper model or the CPU Parakeet fallback is sufficient for that machine. A missing **silero VAD** model is not fatal: the daemon keeps running but degrades to the energy VAD (see next section).
 
 If using a manual model download, point `[asr].model_dir` at the directory containing `encoder.onnx`, `encoder.weights`, `decoder.onnx`, `joiner.onnx`, and `tokens.txt`.
 

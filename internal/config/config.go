@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"waydict/internal/asr"
 )
 
 type Config struct {
@@ -58,6 +60,8 @@ type VAD struct {
 type ASR struct {
 	Engine         string  `toml:"engine"`
 	Provider       string  `toml:"provider"`
+	WhisperModel   string  `toml:"whisper_model"`
+	GPUDevice      int     `toml:"gpu_device"`
 	ModelType      string  `toml:"model_type"`
 	DecodingMethod string  `toml:"decoding_method"`
 	NumThreads     int     `toml:"num_threads"`
@@ -110,10 +114,23 @@ func Load(path string) (Config, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
 	}
+	cfg.applyASRDefaults()
 	if err := cfg.Expand(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c *Config) applyASRDefaults() {
+	if c.ASR.Provider != "" {
+		return
+	}
+	switch c.ASR.Engine {
+	case asr.EngineSherpa:
+		c.ASR.Provider = asr.ProviderCPU
+	case asr.EngineWhisper:
+		c.ASR.Provider = asr.ProviderVulkan
+	}
 }
 
 func (c *Config) Expand() error {
@@ -122,6 +139,7 @@ func (c *Config) Expand() error {
 		&c.Daemon.Socket,
 		&c.VAD.Model,
 		&c.ASR.ModelDir,
+		&c.ASR.WhisperModel,
 		&c.Sway.Socket,
 		&c.Debug.SaveAudioDir,
 	}
@@ -193,6 +211,10 @@ func (c Config) JoinerPath() string {
 
 func (c Config) TokensPath() string {
 	return filepath.Join(c.ASR.ModelDir, c.ASR.Tokens)
+}
+
+func (c Config) WhisperModelPath() string {
+	return filepath.Join(DefaultModelsRoot(), "whisper", c.ASR.WhisperModel+".bin")
 }
 
 func (c Config) Validate() error {
@@ -285,11 +307,61 @@ func (c Config) Validate() error {
 }
 
 func (c Config) ValidateASR() error {
-	if c.ASR.Provider != "cpu" {
-		return fmt.Errorf("asr.provider must equal cpu")
+	switch c.ASR.Engine {
+	case asr.EngineSherpa:
+		return c.validateSherpaASR()
+	case asr.EngineWhisper:
+		provider := c.ASR.Provider
+		if provider == "" {
+			provider = asr.ProviderVulkan
+		}
+		if provider != asr.ProviderCPU && provider != asr.ProviderVulkan {
+			return fmt.Errorf("asr.provider must be cpu or vulkan for whisper-cpp")
+		}
+		if err := validateWhisperModelName(c.ASR.WhisperModel); err != nil {
+			return err
+		}
+		if c.ASR.GPUDevice < 0 {
+			return fmt.Errorf("asr.gpu_device must not be negative")
+		}
+		return nil
+	case asr.EngineAuto:
+		if c.ASR.Provider != "" && c.ASR.Provider != asr.ProviderCPU && c.ASR.Provider != asr.ProviderVulkan {
+			return fmt.Errorf("asr.provider must be empty, cpu, or vulkan for auto")
+		}
+		if c.ASR.GPUDevice < 0 {
+			return fmt.Errorf("asr.gpu_device must not be negative")
+		}
+		if c.ASR.WhisperModel != "" {
+			if err := validateWhisperModelName(c.ASR.WhisperModel); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("asr.engine must be auto, sherpa-onnx, or whisper-cpp")
 	}
-	if c.ASR.Engine != "sherpa-onnx" {
-		return fmt.Errorf("asr.engine must equal sherpa-onnx")
+}
+
+// Bare file stem only: the name is joined under the models root, so any
+// separator component would escape it.
+func validateWhisperModelName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("asr.whisper_model must not be empty for whisper-cpp")
+	}
+	if name != filepath.Base(name) || name == "." || name == ".." {
+		return fmt.Errorf("asr.whisper_model must be a bare model name")
+	}
+	return nil
+}
+
+func (c Config) validateSherpaASR() error {
+	provider := c.ASR.Provider
+	if provider == "" {
+		provider = asr.ProviderCPU
+	}
+	if provider != asr.ProviderCPU {
+		return fmt.Errorf("asr.provider must equal cpu for sherpa-onnx")
 	}
 	if c.ASR.ModelType != "nemo_transducer" {
 		return fmt.Errorf("asr.model_type must equal nemo_transducer")
@@ -350,6 +422,9 @@ func validateModelFile(name, value string) error {
 }
 
 func (c Config) ValidateModelReadable() error {
+	if c.ASR.Engine != asr.EngineSherpa {
+		return nil
+	}
 	for _, p := range []string{c.EncoderPath(), c.DecoderPath(), c.JoinerPath(), c.TokensPath()} {
 		if err := readableFile(p); err != nil {
 			return err

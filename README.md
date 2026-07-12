@@ -1,46 +1,44 @@
 # waydict
 
-Local voice dictation for wlroots Wayland compositors. A daemon owns the microphone and the speech model; the CLI sends `start`/`stop`/`toggle`/`status` over a per-user Unix socket, and recognized text is typed into the focused window with `wtype`. Everything runs locally on CPU — no network.
+Local voice dictation for wlroots Wayland compositors. A daemon owns the microphone and the speech model; the CLI sends `start`/`stop`/`toggle`/`status` over a per-user Unix socket, and recognized text is typed into the focused window with `wtype`. Recognition runs locally on CPU or a Vulkan GPU; only model installation uses the network.
 
-Pipeline: PipeWire capture → silero VAD → Parakeet Unified ASR (sherpa-onnx) → `wtype`.
+Pipeline: PipeWire capture → silero VAD → Whisper (whisper.cpp/Vulkan) or Parakeet Unified (sherpa-onnx/CPU) → `wtype`.
 
 ## Dependencies
 
 Runtime:
+
 - A wlroots compositor with the virtual-keyboard protocol (sway, river, Hyprland, Wayfire, …) and `wtype`.
 - PipeWire.
-- The Parakeet ASR and silero VAD models (downloaded below; not embedded).
+- At least one ASR model and, preferably, the silero VAD model (downloaded below; not embedded).
+- For GPU ASR, a Vulkan-capable GPU with a working ICD and an accessible `/dev/dri/renderD*` node.
 - Sway IPC only for the optional focus guard (cancel-on-focus-change); not required elsewhere.
 
-Build: Go with cgo, a C compiler, `pkg-config`, and `libpipewire-0.3` headers. (`nix-shell` provides these.)
+Build: Go with cgo, a C compiler, `pkg-config`, `libpipewire-0.3` headers, and Vulkan-enabled libwhisper. The Nix flake provides these.
 
 ## Build
 
 ```sh
 CGO_ENABLED=1 CGO_CFLAGS_ALLOW=-fno-strict-overflow \
-  go build -tags "sherpa pipewire" -trimpath -ldflags "-s -w" -o waydict ./cmd/waydict
+  go build -tags "sherpa pipewire whispercpp" -trimpath -ldflags "-s -w" -o waydict ./cmd/waydict
 ```
 
-Tests that don't need native ASR libs: `go test ./...`.
+Omit the `whispercpp` tag when building for a CPU-only system without libwhisper. Tests that don't need native ASR libs: `go test ./...`.
 
 ## Installation
 
 ```sh
 install -Dm755 waydict ~/.local/bin/waydict
 
-# models (not embedded). The Parakeet ASR model is required — the daemon exits on
-# startup without it. The silero VAD model is optional but recommended: without it
-# the daemon falls back to a cruder energy VAD and the silero-scaled [vad]
-# thresholds are misread as linear RMS.
-waydict model install all                # both; or install individually:
-#   waydict model install parakeet-unified-en-0.6b-fp32
-#   waydict model install silero-vad
+# Models are not embedded. This installs CPU Parakeet, the default GPU Whisper
+# model, and silero VAD. Individual installs are also supported.
+waydict model install all
 
 # optional config (sane defaults otherwise)
 mkdir -p ~/.config/waydict
 cp testdata/sample-config.toml ~/.config/waydict/config.toml
 
-waydict doctor   # verify build, both models, wtype, PipeWire, compositor
+waydict doctor   # verify build, engine resolution, models, Vulkan, and session dependencies
 ```
 
 ## Usage
@@ -65,10 +63,16 @@ waydict toggle
 waydict status [--json]
 waydict transcribe --file PATH [--inject]
 waydict model   check [--config PATH] [--dir PATH]
-waydict model   install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|all> [--dir PATH]
+waydict model   install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-small-en|whisper-medium-en|whisper-large-v3-turbo|all> [--dir PATH]
 waydict bench   --file PATH [--repeat N]
 waydict doctor
 ```
+
+## GPU ASR
+
+The default `[asr] engine = "auto"` prefers `whisper-cpp` with the `ggml-large-v3-turbo` model on Vulkan. If the build, model, Vulkan ICD, or render-node access is missing, it logs the reason, exposes it through status, and falls back to the existing sherpa-onnx CPU path. A forced engine never switches to the other engine, and its resolution or load errors are fatal. CPU-only installations therefore behave as before; see [docs/gpu.md](docs/gpu.md) for setup, model sizes, VRAM use, benchmarks, and troubleshooting.
+
+ASR engine changes require a daemon restart; config reload does not re-resolve the engine.
 
 ## Notes
 

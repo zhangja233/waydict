@@ -28,8 +28,12 @@ pre_roll_ms = 400
 max_speech_seconds = 20
 
 [asr]
-engine = "sherpa-onnx"
-provider = "cpu"
+engine = "auto"
+provider = ""
+whisper_model = "ggml-large-v3-turbo"
+gpu_device = 0
+# Force GPU Whisper with: engine = "whisper-cpp", provider = "vulkan"
+# Force CPU Sherpa with: engine = "sherpa-onnx", provider = "cpu"
 model_type = "nemo_transducer"
 decoding_method = "greedy_search"
 num_threads = 4

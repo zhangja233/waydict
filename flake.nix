@@ -7,6 +7,17 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      whisperCompat = pkgs: pkgs.whisper-cpp-vulkan.overrideAttrs (old: {
+        # The cgo integration links backends directly and does not call ggml_backend_load_all.
+        cmakeFlags = old.cmakeFlags ++ [
+          "-DGGML_BACKEND_DL:BOOL=OFF"
+          "-DGGML_CPU_ALL_VARIANTS:BOOL=OFF"
+          "-DGGML_BACKEND_DIR:STRING="
+        ];
+        postFixup = (old.postFixup or "") + ''
+          sed -i "s|^libdir=.*|libdir=$out/lib|" "$out/lib/pkgconfig/whisper.pc"
+        '';
+      });
     in
     {
       packages = forAll (pkgs: {
@@ -20,7 +31,7 @@
           proxyVendor = true;
           vendorHash = "sha256-mbvsfsuwCrW2TaVmBF1GZ6UfXgZvMfGpgYFa2I3G8Ck=";
 
-          tags = [ "sherpa" "pipewire" ];
+          tags = [ "sherpa" "pipewire" "whispercpp" ];
 
           # The cgo test binaries need sherpa/libstdc++ on the runtime linker
           # path; tests are run in the dev shell / CI, not in the package build.
@@ -29,7 +40,7 @@
           nativeBuildInputs = [ pkgs.pkg-config pkgs.autoPatchelfHook ];
           # pipewire: cgo pkg-config dep. stdenv.cc.cc.lib: libstdc++ for the
           # prebuilt sherpa/onnxruntime .so that autoPatchelfHook relocates.
-          buildInputs = [ pkgs.pipewire pkgs.stdenv.cc.cc.lib ];
+          buildInputs = [ pkgs.pipewire pkgs.stdenv.cc.cc.lib (whisperCompat pkgs) pkgs.vulkan-loader ];
 
           env.CGO_ENABLED = "1";
           env.CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
@@ -57,7 +68,7 @@
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.pipewire pkgs.go ];
+          buildInputs = [ pkgs.pipewire pkgs.go (whisperCompat pkgs) pkgs.vulkan-loader ];
           CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
         };

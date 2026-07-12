@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,94 @@ import (
 
 	"waydict/internal/model"
 )
+
+func TestInstallWhisperWritesVerifiedModel(t *testing.T) {
+	body := bytes.Repeat([]byte("whisper"), 128)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	base := t.TempDir()
+	asset := testWhisperAsset(body)
+	path, err := installWhisperAsset(context.Background(), asset, InstallOptions{Dir: base, URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(base, "whisper", asset.File)
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatal("installed whisper model differs from download")
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != asset.File {
+		t.Fatalf("whisper dir not clean after install: %v", entries)
+	}
+}
+
+func TestInstallWhisperRejectsChecksumMismatchAndPreservesExisting(t *testing.T) {
+	body := []byte("replacement")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	base := t.TempDir()
+	asset := testWhisperAsset(body)
+	asset.SHA256 = fmt.Sprintf("%064d", 0)
+	final := filepath.Join(base, "whisper", asset.File)
+	if err := os.MkdirAll(filepath.Dir(final), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(final, []byte("current"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installWhisperAsset(context.Background(), asset, InstallOptions{Dir: base, URL: srv.URL}); err == nil {
+		t.Fatal("expected checksum mismatch")
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "current" {
+		t.Fatalf("existing model changed after rejected download: %q", got)
+	}
+}
+
+func TestInstallWhisperOverwritesExistingModel(t *testing.T) {
+	body := []byte("replacement")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	base := t.TempDir()
+	asset := testWhisperAsset(body)
+	final := filepath.Join(base, "whisper", asset.File)
+	if err := os.MkdirAll(filepath.Dir(final), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(final, []byte("current"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	path, err := installWhisperAsset(context.Background(), asset, InstallOptions{Dir: base, URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("installed body = %q, want %q", got, body)
+	}
+}
 
 func TestInstallSileroVADWritesModel(t *testing.T) {
 	body := bytes.Repeat([]byte("x"), model.MinSileroVADSize+1)
@@ -197,6 +287,17 @@ func writeTinyModel(t *testing.T) string {
 type tarEntry struct {
 	name string
 	body string
+}
+
+func testWhisperAsset(body []byte) model.WhisperAsset {
+	sum := sha256.Sum256(body)
+	return model.WhisperAsset{
+		ID:     "test-whisper",
+		Model:  "ggml-test",
+		File:   "ggml-test.bin",
+		Size:   int64(len(body)),
+		SHA256: fmt.Sprintf("%x", sum),
+	}
 }
 
 func tarData(t *testing.T, entries ...tarEntry) []byte {

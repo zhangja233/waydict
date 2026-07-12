@@ -21,7 +21,9 @@ import (
 	"waydict/internal/exitcode"
 	"waydict/internal/inject"
 	"waydict/internal/model"
+	"waydict/internal/modelinstall"
 	"waydict/internal/swayipc"
+	"waydict/pkg/api"
 )
 
 func TestRunUsage(t *testing.T) {
@@ -236,6 +238,99 @@ func TestBenchUsesInputDurationWhenTranscriptOmitsIt(t *testing.T) {
 	}
 }
 
+func TestResolveForcedWhisperWithoutHookFails(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	newWhisperEngineHook = nil
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineWhisper
+	cfg.ASR.Provider = asr.ProviderVulkan
+	if _, _, err := resolveASREngine(cfg); err == nil || !strings.Contains(err.Error(), "not built in") {
+		t.Fatalf("resolve error = %v, want missing whisper build", err)
+	}
+}
+
+func TestResolveAutoFallsBackWithReason(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	newWhisperEngineHook = nil
+	cfg := config.Defaults()
+	_, resolution, err := resolveASREngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Engine != asr.EngineSherpa || resolution.Provider != asr.ProviderCPU || resolution.FallbackReason == "" {
+		t.Fatalf("resolution = %+v, want sherpa fallback with reason", resolution)
+	}
+}
+
+func TestResolveAutoSurfacesSherpaShapeErrorsAfterFallback(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	newWhisperEngineHook = nil
+	cfg := config.Defaults()
+	cfg.ASR.ModelDir = ""
+	if _, _, err := resolveASREngine(cfg); err == nil || !strings.Contains(err.Error(), "asr.model_dir") {
+		t.Fatalf("resolve error = %v, want resolved sherpa config error", err)
+	}
+}
+
+func TestAutoLoadFailureFallsBackToSherpa(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := config.Defaults()
+	cfg.ASR.NumThreads = 1
+	modelPath := cfg.WhisperModelPath()
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modelPath, []byte("model"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	newWhisperEngineHook = func(string, int, int, bool) (asr.Engine, error) {
+		return fakeEngine{err: errors.New("vulkan allocation failed")}, nil
+	}
+	probeGPUHook = func() (string, error) { return "test gpu", nil }
+	newASREngine = func(config.ASR) asr.Engine {
+		return fakeEngine{transcript: asr.Transcript{Text: "fallback"}}
+	}
+	validateModelForUseFn = func(config.Config) error { return nil }
+	engine, resolution, err := resolveASREngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	engine, resolution, err = loadResolvedASR(context.Background(), cfg, engine, resolution, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	if resolution.Engine != asr.EngineSherpa || resolution.FallbackReason == "" {
+		t.Fatalf("resolution = %+v, want load-time sherpa fallback", resolution)
+	}
+	if got := stderr.String(); !strings.Contains(got, "whisper-cpp load failed") || !strings.Contains(got, "falling back to sherpa-onnx") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestPrintStatusIncludesResolvedASR(t *testing.T) {
+	var out bytes.Buffer
+	printStatus(&out, api.Status{
+		State: api.StateIdle,
+		ASR: api.ASRStatus{
+			Engine:           asr.EngineAuto,
+			ResolvedEngine:   asr.EngineWhisper,
+			ResolvedProvider: asr.ProviderVulkan,
+			GPUName:          "test gpu",
+		},
+	})
+	if got := out.String(); !strings.Contains(got, "asr=whisper-cpp provider=vulkan gpu=test gpu") {
+		t.Fatalf("status output = %q", got)
+	}
+}
+
 func TestModelCheckMissingDirectory(t *testing.T) {
 	var out, err bytes.Buffer
 	dir := filepath.Join(t.TempDir(), "missing")
@@ -306,6 +401,90 @@ func TestModelInstallRequiresName(t *testing.T) {
 	}
 }
 
+func TestModelInstallUsageListsWhisperModels(t *testing.T) {
+	var out bytes.Buffer
+	usage(&out)
+	for _, id := range []string{model.WhisperSmallEnID, model.WhisperMediumEnID, model.WhisperLargeV3TurboID} {
+		if !strings.Contains(out.String(), id) {
+			t.Fatalf("usage does not list %q: %s", id, out.String())
+		}
+	}
+}
+
+func TestModelInstallAllIncludesDefaultWhisper(t *testing.T) {
+	oldUnified := installParakeetUnifiedFP32
+	oldV3 := installParakeetV3Int8
+	oldSilero := installSileroVAD
+	oldWhisper := installWhisper
+	t.Cleanup(func() {
+		installParakeetUnifiedFP32 = oldUnified
+		installParakeetV3Int8 = oldV3
+		installSileroVAD = oldSilero
+		installWhisper = oldWhisper
+	})
+	var calls []string
+	installParakeetUnifiedFP32 = func(context.Context, modelinstall.InstallOptions) (string, error) {
+		calls = append(calls, model.ParakeetUnifiedFP32ID)
+		return "/models/parakeet", nil
+	}
+	installSileroVAD = func(context.Context, modelinstall.InstallOptions) (string, error) {
+		calls = append(calls, "silero-vad")
+		return "/models/silero", nil
+	}
+	installWhisper = func(_ context.Context, id string, _ modelinstall.InstallOptions) (string, error) {
+		calls = append(calls, id)
+		return "/models/whisper", nil
+	}
+	var out, err bytes.Buffer
+	if got := run([]string{"model", "install", "all", "--dir", t.TempDir()}, &out, &err); got != exitcode.Success {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", got, out.String(), err.String())
+	}
+	want := []string{model.ParakeetUnifiedFP32ID, "silero-vad", model.WhisperLargeV3TurboID}
+	if strings.Join(calls, ",") != strings.Join(want, ",") {
+		t.Fatalf("install calls = %v, want %v", calls, want)
+	}
+	defaultAsset, ok := model.WhisperAssetByModel(config.Defaults().ASR.WhisperModel)
+	if !ok || defaultAsset.ID != model.WhisperLargeV3TurboID {
+		t.Fatalf("default whisper model does not map to %s", model.WhisperLargeV3TurboID)
+	}
+}
+
+func TestModelCheckJSONReportsWhisperModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Defaults()
+	path := cfg.WhisperModelPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(model.WhisperModelMinSize(cfg.ASR.WhisperModel)); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeConfig(t, `
+[asr]
+engine = "whisper-cpp"
+provider = "cpu"
+`)
+	var out, stderr bytes.Buffer
+	if got := run([]string{"model", "check", "--config", configPath, "--json"}, &out, &stderr); got != exitcode.Success {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", got, out.String(), stderr.String())
+	}
+	var res model.CheckResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Engine != asr.EngineWhisper || len(res.Validated) != 1 || res.Validated[0].Engine != asr.EngineWhisper || res.Validated[0].Path != path {
+		t.Fatalf("model check result = %+v", res)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -317,12 +496,20 @@ func writeConfig(t *testing.T, body string) string {
 
 func replaceTranscribeDeps(t *testing.T) func() {
 	t.Helper()
+	// Isolate from the real user model dirs and tagged hooks: auto-engine
+	// resolution must never see ~/.local/share/waydict or a live GPU here.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", "")
 	oldTranscribe := transcribeFileFunc
 	oldInjector := newInjector
 	oldGuard := newFocusGuard
 	oldReadAudioFile := readAudioFileFunc
 	oldNewASREngine := newASREngine
 	oldValidateModel := validateModelForUseFn
+	oldNewWhisper := newWhisperEngineHook
+	oldProbeGPU := probeGPUHook
+	newWhisperEngineHook = nil
+	probeGPUHook = nil
 	return func() {
 		transcribeFileFunc = oldTranscribe
 		newInjector = oldInjector
@@ -330,6 +517,8 @@ func replaceTranscribeDeps(t *testing.T) func() {
 		readAudioFileFunc = oldReadAudioFile
 		newASREngine = oldNewASREngine
 		validateModelForUseFn = oldValidateModel
+		newWhisperEngineHook = oldNewWhisper
+		probeGPUHook = oldProbeGPU
 	}
 }
 

@@ -17,7 +17,78 @@ const (
 	// MinSileroVADSize guards against truncated or HTML-error downloads; the real
 	// asset is ~600 KiB and there is no published checksum to verify against.
 	MinSileroVADSize = 64 * 1024
+
+	WhisperSmallEnID           = "whisper-small-en"
+	WhisperMediumEnID          = "whisper-medium-en"
+	WhisperLargeV3TurboID      = "whisper-large-v3-turbo"
+	WhisperSmallEnModel        = "ggml-small.en"
+	WhisperMediumEnModel       = "ggml-medium.en"
+	WhisperLargeV3TurboModel   = "ggml-large-v3-turbo"
+	MinUnknownWhisperModelSize = 64 * 1024 * 1024
 )
+
+type WhisperAsset struct {
+	ID     string
+	Model  string
+	File   string
+	URL    string
+	Size   int64
+	SHA256 string
+}
+
+func WhisperAssets() []WhisperAsset {
+	return []WhisperAsset{
+		{
+			ID:     WhisperSmallEnID,
+			Model:  WhisperSmallEnModel,
+			File:   "ggml-small.en.bin",
+			URL:    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
+			Size:   487614201,
+			SHA256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+		},
+		{
+			ID:     WhisperMediumEnID,
+			Model:  WhisperMediumEnModel,
+			File:   "ggml-medium.en.bin",
+			URL:    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
+			Size:   1533774781,
+			SHA256: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
+		},
+		{
+			ID:     WhisperLargeV3TurboID,
+			Model:  WhisperLargeV3TurboModel,
+			File:   "ggml-large-v3-turbo.bin",
+			URL:    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+			Size:   1624555275,
+			SHA256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+		},
+	}
+}
+
+func WhisperAssetByID(id string) (WhisperAsset, bool) {
+	for _, asset := range WhisperAssets() {
+		if asset.ID == id {
+			return asset, true
+		}
+	}
+	return WhisperAsset{}, false
+}
+
+func WhisperAssetByModel(name string) (WhisperAsset, bool) {
+	for _, asset := range WhisperAssets() {
+		if asset.Model == name {
+			return asset, true
+		}
+	}
+	return WhisperAsset{}, false
+}
+
+func WhisperModelMinSize(name string) int64 {
+	if asset, ok := WhisperAssetByModel(name); ok {
+		return asset.Size
+	}
+	return MinUnknownWhisperModelSize
+}
 
 type RequiredFile struct {
 	Name    string
