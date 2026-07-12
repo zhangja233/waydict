@@ -31,7 +31,7 @@ Set `engine = "whisper-cpp"` and `provider = "vulkan"` temporarily when you want
 The default auto/GPU and forced-Whisper configuration uses `ggml-large-v3-turbo`:
 
 ```sh
-waydict model install whisper-large-v3-turbo
+waydict model install ggml-large-v3-turbo
 waydict model check
 ```
 

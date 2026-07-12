@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"waydict/internal/config"
 	"waydict/internal/model"
 )
 
@@ -142,10 +143,10 @@ func InstallSileroVAD(ctx context.Context, opts InstallOptions) (string, error) 
 	return final, nil
 }
 
-func InstallWhisper(ctx context.Context, id string, opts InstallOptions) (string, error) {
-	asset, ok := model.WhisperAssetByID(id)
-	if !ok {
-		return "", fmt.Errorf("unknown whisper model %q", id)
+func InstallWhisper(ctx context.Context, name string, opts InstallOptions) (string, error) {
+	asset, err := model.WhisperAssetForName(name)
+	if err != nil {
+		return "", err
 	}
 	return installWhisperAsset(ctx, asset, opts)
 }
@@ -179,15 +180,22 @@ func installWhisperAsset(ctx context.Context, asset model.WhisperAsset, opts Ins
 	if !st.Mode().IsRegular() {
 		return "", fmt.Errorf("downloaded whisper model is not a regular file")
 	}
-	if st.Size() != asset.Size {
+	if asset.Size > 0 && st.Size() != asset.Size {
 		return "", fmt.Errorf("downloaded whisper model has size %d, want %d", st.Size(), asset.Size)
 	}
-	got, err := fileSHA256(staged)
-	if err != nil {
-		return "", err
+	if asset.Size == 0 && st.Size() < model.MinUnknownWhisperModelSize {
+		return "", fmt.Errorf("downloaded whisper model is implausibly small (%d bytes); check the URL", st.Size())
 	}
-	if !strings.EqualFold(got, asset.SHA256) {
-		return "", fmt.Errorf("checksum mismatch for %s: got %s, want %s", asset.File, got, asset.SHA256)
+	if asset.SHA256 == "" {
+		fmt.Fprintf(os.Stderr, "warning: integrity is not pinned for non-catalog whisper model %q; download was size-checked only\n", asset.Model)
+	} else {
+		got, err := fileSHA256(staged)
+		if err != nil {
+			return "", err
+		}
+		if !strings.EqualFold(got, asset.SHA256) {
+			return "", fmt.Errorf("checksum mismatch for %s: got %s, want %s", asset.File, got, asset.SHA256)
+		}
 	}
 	final := filepath.Join(whisperDir, asset.File)
 	if err := os.Rename(staged, final); err != nil {
@@ -200,11 +208,7 @@ func modelRoot(dir string) (string, error) {
 	if dir != "" {
 		return dir, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "share", "waydict", "models"), nil
+	return config.DefaultModelsRoot(), nil
 }
 
 func activateInstall(base, modelID, staging string) (string, error) {

@@ -1,6 +1,10 @@
 package model
 
-import "path/filepath"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 const (
 	ParakeetUnifiedFP32ID      = "parakeet-unified-en-0.6b-fp32"
@@ -18,17 +22,14 @@ const (
 	// asset is ~600 KiB and there is no published checksum to verify against.
 	MinSileroVADSize = 64 * 1024
 
-	WhisperSmallEnID           = "whisper-small-en"
-	WhisperMediumEnID          = "whisper-medium-en"
-	WhisperLargeV3TurboID      = "whisper-large-v3-turbo"
 	WhisperSmallEnModel        = "ggml-small.en"
 	WhisperMediumEnModel       = "ggml-medium.en"
 	WhisperLargeV3TurboModel   = "ggml-large-v3-turbo"
 	MinUnknownWhisperModelSize = 64 * 1024 * 1024
+	whisperModelBaseURL        = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
 )
 
 type WhisperAsset struct {
-	ID     string
 	Model  string
 	File   string
 	URL    string
@@ -39,7 +40,6 @@ type WhisperAsset struct {
 func WhisperAssets() []WhisperAsset {
 	return []WhisperAsset{
 		{
-			ID:     WhisperSmallEnID,
 			Model:  WhisperSmallEnModel,
 			File:   "ggml-small.en.bin",
 			URL:    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
@@ -47,7 +47,6 @@ func WhisperAssets() []WhisperAsset {
 			SHA256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
 		},
 		{
-			ID:     WhisperMediumEnID,
 			Model:  WhisperMediumEnModel,
 			File:   "ggml-medium.en.bin",
 			URL:    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
@@ -55,7 +54,6 @@ func WhisperAssets() []WhisperAsset {
 			SHA256: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
 		},
 		{
-			ID:     WhisperLargeV3TurboID,
 			Model:  WhisperLargeV3TurboModel,
 			File:   "ggml-large-v3-turbo.bin",
 			URL:    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
@@ -65,15 +63,6 @@ func WhisperAssets() []WhisperAsset {
 	}
 }
 
-func WhisperAssetByID(id string) (WhisperAsset, bool) {
-	for _, asset := range WhisperAssets() {
-		if asset.ID == id {
-			return asset, true
-		}
-	}
-	return WhisperAsset{}, false
-}
-
 func WhisperAssetByModel(name string) (WhisperAsset, bool) {
 	for _, asset := range WhisperAssets() {
 		if asset.Model == name {
@@ -81,6 +70,20 @@ func WhisperAssetByModel(name string) (WhisperAsset, bool) {
 		}
 	}
 	return WhisperAsset{}, false
+}
+
+func WhisperAssetForName(name string) (WhisperAsset, error) {
+	if strings.TrimSpace(name) == "" || name != filepath.Base(name) || name == "." || name == ".." {
+		return WhisperAsset{}, fmt.Errorf("whisper model must be a non-empty bare name")
+	}
+	if asset, ok := WhisperAssetByModel(name); ok {
+		return asset, nil
+	}
+	return WhisperAsset{
+		Model: name,
+		File:  name + ".bin",
+		URL:   whisperModelBaseURL + name + ".bin",
+	}, nil
 }
 
 func WhisperModelMinSize(name string) int64 {

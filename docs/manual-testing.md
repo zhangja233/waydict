@@ -14,7 +14,7 @@ Expected: the build succeeds on a machine with `pkg-config`, `libpipewire-0.3` d
 
 ```sh
 ./waydict model install parakeet-unified-en-0.6b-fp32
-./waydict model install whisper-large-v3-turbo
+./waydict model install ggml-large-v3-turbo
 ./waydict model check
 ```
 

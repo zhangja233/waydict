@@ -89,6 +89,25 @@ func TestDefaultPathHonorsXDGConfigHome(t *testing.T) {
 	}
 }
 
+func TestDefaultModelsRootHonorsXDGDataHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+	want := filepath.Join(xdg, "waydict", "models")
+	if got := DefaultModelsRoot(); got != want {
+		t.Fatalf("DefaultModelsRoot() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultModelsRootFallsBackToHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	want := filepath.Join(home, ".local", "share", "waydict", "models")
+	if got := DefaultModelsRoot(); got != want {
+		t.Fatalf("DefaultModelsRoot() = %q, want %q", got, want)
+	}
+}
+
 func TestLoadReadsFlatConfigFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -138,11 +157,12 @@ func TestLoadAppliesEngineConditionalProviderDefaults(t *testing.T) {
 }
 
 func TestWhisperModelPathUsesSharedModelsRoot(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
 	cfg := Defaults()
 	cfg.ASR.ModelDir = ""
 	got := cfg.WhisperModelPath()
-	want := filepath.Join(DefaultModelsRoot(), "whisper", "ggml-large-v3-turbo.bin")
+	want := filepath.Join(xdg, "waydict", "models", "whisper", "ggml-large-v3-turbo.bin")
 	if got != want {
 		t.Fatalf("WhisperModelPath() = %q, want %q", got, want)
 	}

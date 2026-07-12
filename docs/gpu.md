@@ -7,7 +7,7 @@ waydict can run Whisper through a direct cgo integration with whisper.cpp 1.8.7.
 - Any Vulkan-capable GPU with a working ICD and an accessible `/dev/dri/renderD*` node.
 - Enough VRAM for the selected model; resident use is approximately 0.9 GB for small.en, 2.1 GB for medium.en, and 2.3 GB for large-v3-turbo.
 - A waydict build with the `whispercpp` tag and a Vulkan-enabled libwhisper.
-- The selected ggml model installed under the waydict model root.
+- The selected ggml model installed under the waydict-managed model root.
 
 On AMD, Mesa RADV is the tested ICD. Development and measurements used an RX 5700 with RADV. ROCm is neither required nor used.
 
@@ -49,23 +49,28 @@ provider = "cpu"
 
 Resolution happens at daemon startup. Restart after any `[asr]` change; config reload deliberately does not swap or re-resolve engines.
 
+`whisper_model` is a bare whisper.cpp ggml model name, not a filesystem path. Any such model name can be selected; waydict resolves it under its managed models root.
+
 ## Models
 
-Downloads are size- and SHA-256-verified before activation.
+The three catalog models have pinned sizes and SHA-256 checksums:
 
-| Install name                     | `whisper_model`        | Download | Resident VRAM |
-|----------------------------------|------------------------|---------:|--------------:|
-| `whisper-small-en`               | `ggml-small.en`        |  ~488 MB |       ~0.9 GB |
-| `whisper-medium-en`              | `ggml-medium.en`       |   ~1.5 GB |       ~2.1 GB |
-| `whisper-large-v3-turbo`         | `ggml-large-v3-turbo`  |   ~1.6 GB |       ~2.3 GB |
+| Model/install name      | Download | Resident VRAM |
+|-------------------------|---------:|--------------:|
+| `ggml-small.en`         |  ~488 MB |       ~0.9 GB |
+| `ggml-medium.en`        |   ~1.5 GB |       ~2.1 GB |
+| `ggml-large-v3-turbo`   |   ~1.6 GB |       ~2.3 GB |
 
 ```sh
-waydict model install whisper-small-en
-waydict model install whisper-medium-en
-waydict model install whisper-large-v3-turbo
+waydict model install ggml-small.en
+waydict model install ggml-medium.en
+waydict model install ggml-large-v3-turbo
+waydict model install ggml-base.en
 ```
 
-`waydict model install all` installs Parakeet, silero VAD, and the default `whisper-large-v3-turbo`. `waydict model check` is engine-aware: a forced engine checks its model, while `auto` reports each model that passes its file checks and succeeds when at least one does.
+Any bare whisper.cpp ggml model name works. Non-catalog models are fetched from the upstream whisper.cpp model repository, checked against a 64 MiB plausible-size minimum, and installed with a warning that integrity is not pinned. waydict installs models at `${XDG_DATA_HOME:-~/.local/share}/waydict/models/whisper/<name>.bin`; the path is managed rather than configurable, apart from the existing install-only `--dir` override.
+
+`waydict model install all` installs Parakeet, silero VAD, and the default `ggml-large-v3-turbo`. `waydict model check` is engine-aware: a forced engine checks its model, while `auto` reports each model that passes its file checks and succeeds when at least one does.
 
 ## Performance
 

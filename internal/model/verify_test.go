@@ -235,6 +235,18 @@ func TestCheckConfigRejectsTinyWhisperModel(t *testing.T) {
 	}
 }
 
+func TestCheckConfigAcceptsUnknownWhisperModel(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineWhisper
+	cfg.ASR.WhisperModel = "ggml-base.en"
+	writePlausibleWhisperModel(t, cfg)
+	res := CheckConfig(cfg, CheckOptions{StrictSizes: true})
+	if !res.OK || len(res.Validated) != 1 || res.Validated[0].Name != cfg.ASR.WhisperModel {
+		t.Fatalf("unknown whisper model check = %+v", res)
+	}
+}
+
 func TestCheckDirRejectsWhisperFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ggml-small.en.bin")
 	if err := os.WriteFile(path, []byte("model"), 0644); err != nil {

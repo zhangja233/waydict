@@ -77,7 +77,8 @@ func usage(w io.Writer) {
   waydict status [--json]
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
-  waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-small-en|whisper-medium-en|whisper-large-v3-turbo|all> [--dir PATH]
+  waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-model-name, e.g. ggml-large-v3-turbo|all> [--dir PATH]
+    any whisper.cpp ggml model name works; catalog names are integrity-pinned, others are size-checked
   waydict bench --file PATH [--repeat N]
   waydict doctor`)
 }
@@ -484,16 +485,19 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitcode.Success
 	case "install":
-		const installUsage = "usage: waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-small-en|whisper-medium-en|whisper-large-v3-turbo|all> [--dir PATH]"
+		const installUsage = `usage: waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-model-name, e.g. ggml-large-v3-turbo|all> [--dir PATH]
+any whisper.cpp ggml model name works; catalog names are integrity-pinned, others are size-checked`
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, installUsage)
 			return exitcode.Usage
 		}
 		name := args[1]
-		_, whisperModel := model.WhisperAssetByID(name)
-		if name != model.ParakeetUnifiedFP32ID && name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" && !whisperModel {
-			fmt.Fprintln(stderr, installUsage)
-			return exitcode.Usage
+		if name != model.ParakeetUnifiedFP32ID && name != "parakeet-v3-int8" && name != "silero-vad" && name != "all" {
+			if _, err := model.WhisperAssetForName(name); err != nil {
+				fmt.Fprintln(stderr, err)
+				fmt.Fprintln(stderr, installUsage)
+				return exitcode.Usage
+			}
 		}
 		fs := flag.NewFlagSet("model install", flag.ContinueOnError)
 		fs.SetOutput(stderr)
@@ -528,7 +532,7 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		if name == "all" {
 			ok = install(model.ParakeetUnifiedFP32ID) && ok
 			ok = install("silero-vad") && ok
-			ok = install(model.WhisperLargeV3TurboID) && ok
+			ok = install(config.Defaults().ASR.WhisperModel) && ok
 		} else {
 			ok = install(name)
 		}

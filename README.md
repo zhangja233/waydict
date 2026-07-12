@@ -64,7 +64,7 @@ waydict toggle
 waydict status [--json]
 waydict transcribe --file PATH [--inject]
 waydict model   check [--config PATH] [--dir PATH]
-waydict model   install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-small-en|whisper-medium-en|whisper-large-v3-turbo|all> [--dir PATH]
+waydict model   install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-model-name|all> [--dir PATH]
 waydict bench   --file PATH [--repeat N]
 waydict doctor
 ```
@@ -72,6 +72,8 @@ waydict doctor
 ## GPU ASR
 
 The default `[asr] engine = "auto"` prefers `whisper-cpp` with the `ggml-large-v3-turbo` model on Vulkan. If the build, model, Vulkan ICD, or render-node access is missing, it logs the reason, exposes it through status, and falls back to the existing sherpa-onnx CPU path. A forced engine never switches to the other engine, and its resolution or load errors are fatal. CPU-only installations therefore behave as before; see [docs/gpu.md](docs/gpu.md) for setup, model sizes, VRAM use, benchmarks, and troubleshooting.
+
+`[asr].whisper_model` accepts any bare whisper.cpp ggml model name, and the same name installs it: `waydict model install ggml-large-v3-turbo`. waydict owns the model path at `${XDG_DATA_HOME:-~/.local/share}/waydict/models/whisper/<name>.bin`; there is no model-path config for Whisper. The existing install-only `--dir` override is available for staging elsewhere. The catalog names `ggml-small.en`, `ggml-medium.en`, and `ggml-large-v3-turbo` have pinned sizes and SHA-256 checksums. Other names are fetched from the whisper.cpp model repository, require a plausible size, and emit an unpinned-integrity warning.
 
 ASR engine changes require a daemon restart; config reload does not re-resolve the engine.
 

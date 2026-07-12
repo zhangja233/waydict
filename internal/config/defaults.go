@@ -39,6 +39,10 @@ func DefaultPath() string {
 }
 
 func DefaultModelsRoot() string {
+	dir := os.Getenv("XDG_DATA_HOME")
+	if dir != "" {
+		return filepath.Join(dir, "waydict", "models")
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "waydict", "models")
 }

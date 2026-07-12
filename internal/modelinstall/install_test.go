@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,7 +48,7 @@ func TestInstallWhisperWritesVerifiedModel(t *testing.T) {
 	}
 }
 
-func TestInstallWhisperRejectsChecksumMismatchAndPreservesExisting(t *testing.T) {
+func TestInstallWhisperCatalogAssetRejectsChecksumMismatchAndPreservesExisting(t *testing.T) {
 	body := []byte("replacement")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(body)
@@ -72,6 +73,73 @@ func TestInstallWhisperRejectsChecksumMismatchAndPreservesExisting(t *testing.T)
 	}
 	if string(got) != "current" {
 		t.Fatalf("existing model changed after rejected download: %q", got)
+	}
+}
+
+func TestInstallWhisperUnknownNameUsesMinimumSize(t *testing.T) {
+	size := int64(model.MinUnknownWhisperModelSize + 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.CopyN(w, zeroReader{}, size)
+	}))
+	defer srv.Close()
+
+	oldStderr := os.Stderr
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	base := t.TempDir()
+	path, err := InstallWhisper(context.Background(), "ggml-base.en", InstallOptions{Dir: base, URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stderr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = oldStderr
+	warning, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(warning, []byte("integrity is not pinned")); got != 1 {
+		t.Fatalf("warning count = %d, stderr=%q", got, warning)
+	}
+	want := filepath.Join(base, "whisper", "ggml-base.en.bin")
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if st, err := os.Stat(path); err != nil || st.Size() != size {
+		t.Fatalf("installed file stat = %v, err = %v", st, err)
+	}
+}
+
+func TestInstallWhisperUnknownNameRejectsTinyDownload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("tiny"))
+	}))
+	defer srv.Close()
+	base := t.TempDir()
+	if _, err := InstallWhisper(context.Background(), "ggml-base.en", InstallOptions{Dir: base, URL: srv.URL}); err == nil {
+		t.Fatal("expected error for implausibly small download")
+	}
+	if _, err := os.Stat(filepath.Join(base, "whisper", "ggml-base.en.bin")); !os.IsNotExist(err) {
+		t.Fatalf("model file should not exist after rejected download: %v", err)
+	}
+}
+
+func TestModelRootUsesConfiguredDefault(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+	got, err := modelRoot("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(xdg, "waydict", "models")
+	if got != want {
+		t.Fatalf("modelRoot() = %q, want %q", got, want)
 	}
 }
 
@@ -292,12 +360,20 @@ type tarEntry struct {
 func testWhisperAsset(body []byte) model.WhisperAsset {
 	sum := sha256.Sum256(body)
 	return model.WhisperAsset{
-		ID:     "test-whisper",
-		Model:  "ggml-test",
-		File:   "ggml-test.bin",
+		Model:  model.WhisperSmallEnModel,
+		File:   "ggml-small.en.bin",
 		Size:   int64(len(body)),
 		SHA256: fmt.Sprintf("%x", sum),
 	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 func tarData(t *testing.T, entries ...tarEntry) []byte {

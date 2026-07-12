@@ -389,7 +389,7 @@ func TestPrintDoctorVADOKForEnergyEngine(t *testing.T) {
 
 func TestModelInstallRejectsUnknownName(t *testing.T) {
 	var out, err bytes.Buffer
-	if got := run([]string{"model", "install", "bogus"}, &out, &err); got != exitcode.Usage {
+	if got := run([]string{"model", "install", "bogus/name"}, &out, &err); got != exitcode.Usage {
 		t.Fatalf("exit = %d, want %d; stderr=%s", got, exitcode.Usage, err.String())
 	}
 }
@@ -401,13 +401,30 @@ func TestModelInstallRequiresName(t *testing.T) {
 	}
 }
 
-func TestModelInstallUsageListsWhisperModels(t *testing.T) {
+func TestModelInstallUsageDescribesWhisperNames(t *testing.T) {
 	var out bytes.Buffer
 	usage(&out)
-	for _, id := range []string{model.WhisperSmallEnID, model.WhisperMediumEnID, model.WhisperLargeV3TurboID} {
-		if !strings.Contains(out.String(), id) {
-			t.Fatalf("usage does not list %q: %s", id, out.String())
+	for _, text := range []string{"whisper-model-name", model.WhisperLargeV3TurboModel, "integrity-pinned", "size-checked"} {
+		if !strings.Contains(out.String(), text) {
+			t.Fatalf("usage does not contain %q: %s", text, out.String())
 		}
+	}
+}
+
+func TestModelInstallRoutesWhisperName(t *testing.T) {
+	oldWhisper := installWhisper
+	t.Cleanup(func() { installWhisper = oldWhisper })
+	var gotName string
+	installWhisper = func(_ context.Context, name string, _ modelinstall.InstallOptions) (string, error) {
+		gotName = name
+		return "/models/whisper/ggml-base.en.bin", nil
+	}
+	var out, err bytes.Buffer
+	if got := run([]string{"model", "install", "ggml-base.en", "--dir", t.TempDir()}, &out, &err); got != exitcode.Success {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", got, out.String(), err.String())
+	}
+	if gotName != "ggml-base.en" {
+		t.Fatalf("whisper install name = %q", gotName)
 	}
 }
 
@@ -431,21 +448,17 @@ func TestModelInstallAllIncludesDefaultWhisper(t *testing.T) {
 		calls = append(calls, "silero-vad")
 		return "/models/silero", nil
 	}
-	installWhisper = func(_ context.Context, id string, _ modelinstall.InstallOptions) (string, error) {
-		calls = append(calls, id)
+	installWhisper = func(_ context.Context, name string, _ modelinstall.InstallOptions) (string, error) {
+		calls = append(calls, name)
 		return "/models/whisper", nil
 	}
 	var out, err bytes.Buffer
 	if got := run([]string{"model", "install", "all", "--dir", t.TempDir()}, &out, &err); got != exitcode.Success {
 		t.Fatalf("exit = %d; stdout=%s stderr=%s", got, out.String(), err.String())
 	}
-	want := []string{model.ParakeetUnifiedFP32ID, "silero-vad", model.WhisperLargeV3TurboID}
+	want := []string{model.ParakeetUnifiedFP32ID, "silero-vad", config.Defaults().ASR.WhisperModel}
 	if strings.Join(calls, ",") != strings.Join(want, ",") {
 		t.Fatalf("install calls = %v, want %v", calls, want)
-	}
-	defaultAsset, ok := model.WhisperAssetByModel(config.Defaults().ASR.WhisperModel)
-	if !ok || defaultAsset.ID != model.WhisperLargeV3TurboID {
-		t.Fatalf("default whisper model does not map to %s", model.WhisperLargeV3TurboID)
 	}
 }
 
