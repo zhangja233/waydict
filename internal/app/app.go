@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ type App struct {
 	focus          *swayipc.Client
 	logger         *slog.Logger
 	post           inject.PostProcessor
+	caseState      inject.CaseState
 
 	mu             sync.Mutex
 	segMu          sync.Mutex // serializes segmenter access (silero VAD is not concurrency-safe)
@@ -95,7 +97,8 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		injector:       deps.Injector,
 		focus:          deps.Focus,
 		logger:         deps.Logger,
-		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
+		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace, cfg.ASR.Vocabulary),
+		caseState:      inject.CaseState{AtBoundary: true},
 		startedAt:      time.Now(),
 		rootCtx:        ctx,
 		asrQueue:       make(chan segmentJob, 8),
@@ -208,6 +211,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.Mode = modePtr(mode)
 	a.status.LastError = nil
 	a.status.LastWarning = nil
+	a.caseState = inject.CaseState{AtBoundary: true}
 	a.currentSession++
 	session := a.currentSession
 	a.mu.Unlock()
@@ -380,7 +384,7 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 		return withCode("restart_required", err)
 	}
 	a.cfg = cfg
-	a.post = inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace)
+	a.post = inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace, cfg.ASR.Vocabulary)
 	a.status.LastTranscriptRedacted = cfg.Daemon.RedactTranscriptsInLogs
 	if cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastTranscript = ""
@@ -412,7 +416,7 @@ func reloadRequiresRestart(old, next config.Config) error {
 		return fmt.Errorf("VAD changes require restart")
 	}
 	// Resolution is startup-only; swapping engines would race the ASR worker.
-	if old.ASR != next.ASR {
+	if !reflect.DeepEqual(old.ASR, next.ASR) {
 		return fmt.Errorf("ASR changes require restart")
 	}
 	oldInjection := old.Injection
@@ -889,7 +893,11 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		a.setState(a.nextState())
 		return
 	}
-	text := a.post.Apply(tr.Text)
+	a.mu.Lock()
+	post := a.post
+	caseState := a.caseState
+	a.mu.Unlock()
+	text, next := post.Apply(tr.Text, caseState)
 	if text == "" {
 		a.logDebug("postprocess produced empty text", "session", job.session, "segment_id", seg.ID)
 		a.setState(a.nextState())
@@ -914,6 +922,13 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 			a.setState(a.nextState())
 			return
 		}
+		a.mu.Lock()
+		if job.session == a.currentSession {
+			if _, discarded := a.discarded[job.session]; !discarded {
+				a.caseState = next
+			}
+		}
+		a.mu.Unlock()
 	}
 	a.recordTranscript(text)
 	if focusWarning != nil {

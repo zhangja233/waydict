@@ -31,6 +31,7 @@ max_speech_seconds = 20
 engine = "auto"
 provider = ""
 whisper_model = "ggml-large-v3-turbo"
+vocabulary = ["Claude", "Codex"]
 gpu_device = 0
 # Force GPU Whisper with: engine = "whisper-cpp", provider = "vulkan"
 # Force CPU Sherpa with: engine = "sherpa-onnx", provider = "cpu"
@@ -58,6 +59,11 @@ trim_leading = true
 collapse_spaces = true
 fix_punctuation_spacing = true
 spoken_formatting_commands = false
+smart_case = true
+
+[postprocess.replacements]
+cloud = "Claude"
+codec = "Codex"
 
 [sway]
 require_sway = true

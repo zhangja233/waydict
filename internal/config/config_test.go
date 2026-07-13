@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"waydict/internal/asr"
@@ -41,6 +42,85 @@ whisper_model = "$USER-small.en"
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadPostProcessAndVocabulary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[asr]
+vocabulary = ["Claude", "Codex"]
+
+[postprocess]
+smart_case = false
+
+[postprocess.replacements]
+cloud = "Claude"
+codec = "Codex"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PostProcess.SmartCase {
+		t.Fatal("smart_case was not decoded")
+	}
+	if got := cfg.PostProcess.Replacements["cloud"]; got != "Claude" {
+		t.Fatalf("cloud replacement = %q, want Claude", got)
+	}
+	if len(cfg.ASR.Vocabulary) != 2 || cfg.ASR.Vocabulary[0] != "Claude" || cfg.ASR.Vocabulary[1] != "Codex" {
+		t.Fatalf("vocabulary = %v", cfg.ASR.Vocabulary)
+	}
+}
+
+func TestPostProcessAndVocabularyDefaults(t *testing.T) {
+	cfg := Defaults()
+	if !cfg.PostProcess.SmartCase {
+		t.Fatal("smart_case must default to true")
+	}
+	if len(cfg.PostProcess.Replacements) != 0 {
+		t.Fatalf("replacements default = %v, want empty", cfg.PostProcess.Replacements)
+	}
+	if len(cfg.ASR.Vocabulary) != 0 {
+		t.Fatalf("vocabulary default = %v, want empty", cfg.ASR.Vocabulary)
+	}
+}
+
+func TestWhisperInitialPrompt(t *testing.T) {
+	for _, vocabulary := range [][]string{nil, {}} {
+		if got := WhisperInitialPrompt(vocabulary); got != "" {
+			t.Fatalf("WhisperInitialPrompt(%v) = %q, want empty", vocabulary, got)
+		}
+	}
+	if got, want := WhisperInitialPrompt([]string{"Claude", "Codex"}), "Vocabulary: Claude, Codex."; got != want {
+		t.Fatalf("WhisperInitialPrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateRejectsEmptyVocabularyEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.ASR.Vocabulary = []string{"Claude", " \t"}
+	if err := cfg.ValidateASR(); err == nil {
+		t.Fatal("expected empty vocabulary entry error")
+	}
+}
+
+func TestValidateRejectsEmptyReplacementKey(t *testing.T) {
+	cfg := Defaults()
+	cfg.PostProcess.Replacements = map[string]string{" \t": "Claude"}
+	if err := cfg.ValidatePostProcess(); err == nil {
+		t.Fatal("expected empty replacement key error")
+	}
+}
+
+func TestValidateRejectsNonWordReplacementBoundary(t *testing.T) {
+	cfg := Defaults()
+	cfg.PostProcess.Replacements = map[string]string{"C++": "C plus plus"}
+	err := cfg.ValidatePostProcess()
+	if err == nil || !strings.Contains(err.Error(), "ASCII word character") {
+		t.Fatalf("ValidatePostProcess() error = %v, want ASCII boundary error", err)
 	}
 }
 

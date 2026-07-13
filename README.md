@@ -2,7 +2,7 @@
 
 Local voice dictation for wlroots Wayland compositors. A daemon owns the microphone and the speech model; the CLI sends `start`/`stop`/`toggle`/`status` over a per-user Unix socket, and recognized text is typed into the focused window with `wtype`. Recognition runs locally on CPU or a Vulkan GPU; only model installation uses the network.
 
-Pipeline: PipeWire capture → silero VAD → Whisper (whisper.cpp/Vulkan) or Parakeet Unified (sherpa-onnx/CPU) → `wtype`.
+Pipeline: PipeWire capture → silero VAD → Whisper (whisper.cpp/Vulkan) or Parakeet Unified (sherpa-onnx/CPU) → post-processing → `wtype`.
 
 ## Dependencies
 
@@ -68,6 +68,28 @@ waydict model   install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-v
 waydict bench   --file PATH [--repeat N]
 waydict doctor
 ```
+
+### Dictation text
+
+```toml
+[asr]
+vocabulary = ["Claude", "Codex"]
+
+[postprocess]
+smart_case = true
+
+[postprocess.replacements]
+cloud = "Claude"
+codec = "Codex"
+```
+
+`smart_case` defaults to `true`. It capitalizes a segment's first word only when the segment completes a sentence at a sentence boundary; dictated words, phrases, and fragments stay lowercase. Standalone `I` and its contractions, all-caps acronyms, and terms in `asr.vocabulary` keep their casing across segments.
+
+Replacements default to an empty table and are deterministic, case-insensitive whole-word substitutions on every engine. They are deliberately blunt: with the example above, a genuine "cloud" also becomes "Claude". The target is inserted with its configured casing, which is preserved even when the word begins a fragment (the target's first word is protected from smart-case lowercasing).
+
+`asr.vocabulary` defaults to an empty list. On Whisper it biases decoding through the initial prompt; sherpa-onnx/Parakeet uses it only as the smart-case protect-list and relies on replacements for corrections. Keep the list focused on terms you actually dictate: strong Whisper bias can emit a primed term for very short or ambiguous audio.
+
+Reloading config applies `[postprocess]` changes, including `smart_case` and replacements. Changing `asr.vocabulary`, like any other `[asr]` setting, requires a daemon restart. See [docs/sway.md](docs/sway.md) for the segment and host-specific behavior.
 
 ## GPU ASR
 

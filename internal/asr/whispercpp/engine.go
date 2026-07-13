@@ -169,6 +169,11 @@ func (e *Engine) Transcribe(ctx context.Context, segment asr.AudioSegment) (asr.
 	defer nativeMu.Unlock()
 	beginCapture(&e.logs)
 	defer endCapture(&e.logs)
+	var initialPrompt *C.char
+	if e.cfg.InitialPrompt != "" {
+		initialPrompt = C.CString(e.cfg.InitialPrompt)
+		defer C.free(unsafe.Pointer(initialPrompt))
+	}
 
 	// ctx is only honored between calls: the native decode blocks until done,
 	// matching the sherpa engine. VAD bounds segment length, so the window is small.
@@ -178,6 +183,7 @@ func (e *Engine) Transcribe(ctx context.Context, segment asr.AudioSegment) (asr.
 		(*C.float)(unsafe.Pointer(&segment.Samples[0])),
 		C.int(len(segment.Samples)),
 		C.int(e.cfg.NumThreads),
+		initialPrompt,
 	)
 	runtime.KeepAlive(segment.Samples)
 	decodeDuration := time.Since(start)

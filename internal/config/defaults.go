@@ -88,6 +88,7 @@ func Defaults() Config {
 		ASR: ASR{
 			Engine:         asr.EngineAuto,
 			Provider:       "",
+			Vocabulary:     []string{},
 			ModelType:      "nemo_transducer",
 			DecodingMethod: "greedy_search",
 			NumThreads:     4,
@@ -114,6 +115,7 @@ func Defaults() Config {
 			CollapseSpaces:           true,
 			FixPunctuationSpacing:    true,
 			SpokenFormattingCommands: false,
+			SmartCase:                true,
 		},
 		Sway: Sway{
 			RequireSway: true,

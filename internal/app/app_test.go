@@ -17,6 +17,7 @@ import (
 	"waydict/internal/audio"
 	"waydict/internal/config"
 	"waydict/internal/control"
+	"waydict/internal/inject"
 	"waydict/internal/swayipc"
 	"waydict/internal/vad"
 	"waydict/pkg/api"
@@ -338,7 +339,7 @@ func TestReloadConfigAppliesReloadableFields(t *testing.T) {
 	if app.cfg.Daemon.AutoStopAfterSilenceSeconds != next.Daemon.AutoStopAfterSilenceSeconds {
 		t.Fatal("auto-stop setting was not reloaded")
 	}
-	if got := app.post.Apply("hello"); got != "hello" {
+	if got, _ := app.post.Apply("hello", app.caseState); got != "hello" {
 		t.Fatalf("postprocessor text = %q, want no appended space", got)
 	}
 	if !app.cfg.Debug.SaveAudioSegments || app.cfg.Debug.SaveAudioDir != next.Debug.SaveAudioDir {
@@ -655,6 +656,141 @@ func TestFakeASRToInjection(t *testing.T) {
 	}
 }
 
+func TestCaseStateAdvancesAcrossSegments(t *testing.T) {
+	cfg := config.Defaults()
+	engine := &FakeEngine{Text: "First fragment", IsLoaded: true}
+	mem := &MemoryInjector{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{Engine: engine, Injector: mem})
+	job := segmentJob{segment: asr.AudioSegment{ID: "first", Duration: time.Second}}
+
+	app.handleSegment(ctx, job)
+	engine.Text = "Jumped over."
+	job.segment.ID = "second"
+	app.handleSegment(ctx, job)
+
+	want := []string{"first fragment ", "jumped over. "}
+	if len(mem.Texts) != len(want) || mem.Texts[0] != want[0] || mem.Texts[1] != want[1] {
+		t.Fatalf("injected texts = %q, want %q", mem.Texts, want)
+	}
+	app.mu.Lock()
+	atBoundary := app.caseState.AtBoundary
+	app.mu.Unlock()
+	if !atBoundary {
+		t.Fatal("sentence-ending continuation did not advance the boundary")
+	}
+}
+
+func TestCaseStateDoesNotAdvanceOnInjectionFailure(t *testing.T) {
+	cfg := config.Defaults()
+	engine := &FakeEngine{Text: "First fragment", IsLoaded: true}
+	mem := &MemoryInjector{Err: errors.New("wtype failed")}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{Engine: engine, Injector: mem})
+	job := segmentJob{segment: asr.AudioSegment{ID: "failed", Duration: time.Second}}
+
+	app.handleSegment(ctx, job)
+	app.mu.Lock()
+	atBoundary := app.caseState.AtBoundary
+	app.mu.Unlock()
+	if !atBoundary {
+		t.Fatal("failed injection advanced case state")
+	}
+
+	mem.Err = nil
+	engine.Text = "hello there."
+	job.segment.ID = "retry"
+	app.handleSegment(ctx, job)
+	if len(mem.Texts) != 1 || mem.Texts[0] != "Hello there. " {
+		t.Fatalf("injected texts = %q, want boundary-capitalized retry", mem.Texts)
+	}
+}
+
+func TestStartResetsCaseState(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Daemon.AutoStopAfterSilenceSeconds = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := New(ctx, cfg, Dependencies{
+		Source:   &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond},
+		Engine:   &FakeEngine{IsLoaded: true},
+		Injector: &MemoryInjector{},
+	})
+	app.mu.Lock()
+	app.caseState.AtBoundary = false
+	app.mu.Unlock()
+
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	defer app.Stop(ctx, false)
+	app.mu.Lock()
+	atBoundary := app.caseState.AtBoundary
+	app.mu.Unlock()
+	if !atBoundary {
+		t.Fatal("Start did not reset case state")
+	}
+}
+
+func TestDiscardedSessionCannotCommitCaseStateAfterRestart(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Daemon.AutoStopAfterSilenceSeconds = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	release := make(chan struct{})
+	mem := &blockingMemoryInjector{
+		started: make(chan struct{}, 1),
+		release: release,
+	}
+	app := New(ctx, cfg, Dependencies{
+		Source:   &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond},
+		Engine:   &FakeEngine{Text: "First fragment", IsLoaded: true},
+		Injector: mem,
+	})
+	defer app.Stop(ctx, false)
+
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	app.queueSegment(asr.AudioSegment{ID: "stale", Duration: time.Second})
+	select {
+	case <-mem.started:
+	case <-time.After(time.Second):
+		t.Fatal("injector did not block")
+	}
+	if err := app.Stop(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		app.mu.Lock()
+		pending := app.pendingASR
+		state := app.caseState
+		session := app.currentSession
+		app.mu.Unlock()
+		if pending == 0 {
+			if session != 2 {
+				t.Fatalf("current session = %d, want 2", session)
+			}
+			if state != (inject.CaseState{AtBoundary: true}) {
+				t.Fatalf("case state = %+v, want reset boundary", state)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stale ASR job did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestFocusChangeCancelsInjection(t *testing.T) {
 	socket := startFakeSway(t,
 		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":10,"type":"con","name":"first","focused":true}]}]}]}`,
@@ -702,6 +838,12 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 		if st.LastError != nil && st.LastError.Code == "focus_changed" {
 			if len(mem.Texts) != 0 {
 				t.Fatalf("text was injected despite focus change: %v", mem.Texts)
+			}
+			app.mu.Lock()
+			atBoundary := app.caseState.AtBoundary
+			app.mu.Unlock()
+			if !atBoundary {
+				t.Fatal("focus cancellation advanced case state")
 			}
 			return
 		}
@@ -1144,6 +1286,25 @@ func (g *gateEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.
 type errorEngine struct {
 	FakeEngine
 	err error
+}
+
+type blockingMemoryInjector struct {
+	MemoryInjector
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (m *blockingMemoryInjector) TypeText(ctx context.Context, text string) error {
+	select {
+	case m.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-m.release:
+		return m.MemoryInjector.TypeText(ctx, text)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (e *errorEngine) Transcribe(context.Context, asr.AudioSegment) (asr.Transcript, error) {
