@@ -49,6 +49,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return sendCommand(args[1:], stdout, stderr, "start")
 	case "stop":
 		return sendCommand(args[1:], stdout, stderr, "stop")
+	case "release":
+		return sendCommand(args[1:], stdout, stderr, "release")
 	case "toggle":
 		return sendCommand(args[1:], stdout, stderr, "toggle")
 	case "status":
@@ -73,6 +75,7 @@ func usage(w io.Writer) {
   waydict daemon [--config PATH] [--foreground] [--log-level LEVEL]
   waydict start [--mode toggle|oneshot|hold]
   waydict stop [--commit|--discard]
+  waydict release
   waydict toggle
   waydict status [--json]
   waydict transcribe --file PATH [--inject]

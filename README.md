@@ -1,6 +1,6 @@
 # waydict
 
-Local voice dictation for wlroots Wayland compositors. A daemon owns the microphone and the speech model; the CLI sends `start`/`stop`/`toggle`/`status` over a per-user Unix socket, and recognized text is typed into the focused window with `wtype`. Recognition runs locally on CPU or a Vulkan GPU; only model installation uses the network.
+Local voice dictation for wlroots Wayland compositors. A daemon owns the microphone and the speech model; the CLI sends recording and commit commands over a per-user Unix socket, and recognized text is typed into the focused window with `wtype`. Recognition runs locally on CPU or a Vulkan GPU; only model installation uses the network.
 
 Pipeline: PipeWire capture → silero VAD → Whisper (whisper.cpp/Vulkan) or Parakeet Unified (sherpa-onnx/CPU) → post-processing → `wtype`.
 
@@ -55,11 +55,12 @@ Start the daemon and bind keys. Sway example:
 
 ```sway
 exec_always waydict daemon
-bindsym --release --no-repeat F2 exec waydict start --mode toggle
-bindsym --release --no-repeat F3 exec waydict stop --commit
+bindsym --no-repeat F1 exec waydict start --mode hold
+bindsym --release --no-repeat F1 exec waydict release
+bindsym --release --no-repeat $mod+a exec waydict toggle
 ```
 
-`waydict toggle` is a single-key alternative; hold-to-talk uses `--mode hold`. On non-Sway wlroots compositors set `[sway] require_sway=false` and `focus_check=false` (you lose the focus guard) and bind the same commands.
+Hold and toggle modes decode completed VAD segments in the background but buffer their text until explicit finalization. `release` only finalizes a hold session, so a stray key-up cannot close a toggle session. Oneshot mode retains automatic injection after its first segment. On non-Sway wlroots compositors set `[sway] require_sway=false` and `focus_check=false` (you lose the focus guard) and bind the same commands.
 
 Commands:
 
@@ -67,6 +68,7 @@ Commands:
 waydict daemon [--config PATH] [--foreground] [--log-level LEVEL]
 waydict start  [--mode toggle|oneshot|hold]
 waydict stop   [--commit|--discard]
+waydict release
 waydict toggle
 waydict status [--json]
 waydict transcribe --file PATH [--inject]

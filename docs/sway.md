@@ -14,9 +14,11 @@ Hold-to-talk mode:
 
 ```sway
 exec_always waydict daemon
-bindsym --no-repeat $mod+v exec waydict start --mode hold
-bindsym --release --no-repeat $mod+v exec waydict stop --commit
+bindsym --no-repeat F1 exec waydict start --mode hold
+bindsym --release --no-repeat F1 exec waydict release
 ```
+
+Hold and toggle modes buffer recognized text until release or the final toggle. VAD still splits long dictation so earlier audio can be decoded while you speak; finalization flushes the open tail and injects the ordered result once. `waydict release` is mode-guarded and cannot finalize an active toggle session. Oneshot mode injects automatically after its first segment.
 
 Use `--release` for toggle mode so modifier release does not race with injected text. Use `--no-repeat` so a held key does not send repeated starts. Do not use `--locked`.
 

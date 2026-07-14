@@ -751,7 +751,7 @@ func TestDiscardedSessionCannotCommitCaseStateAfterRestart(t *testing.T) {
 	})
 	defer app.Stop(ctx, false)
 
-	if err := app.Start(ctx, api.ModeToggle); err != nil {
+	if err := app.Start(ctx, api.ModeOneshot); err != nil {
 		t.Fatal(err)
 	}
 	app.queueSegment(asr.AudioSegment{ID: "stale", Duration: time.Second})
@@ -829,7 +829,7 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 		Injector:  mem,
 		Focus:     swayipc.New(socket),
 	})
-	if err := app.Start(ctx, api.ModeToggle); err != nil {
+	if err := app.Start(ctx, api.ModeOneshot); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -891,7 +891,7 @@ func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
 		Injector:  mem,
 		Focus:     swayipc.New(socket),
 	})
-	if err := app.Start(ctx, api.ModeToggle); err != nil {
+	if err := app.Start(ctx, api.ModeOneshot); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)

@@ -70,6 +70,8 @@ type App struct {
 	currentSession uint64
 	discarded      map[uint64]struct{}
 	pendingASR     int
+	pendingSession map[uint64]int
+	deferred       map[uint64]*deferredSession
 	segmentOpen    bool
 }
 
@@ -104,6 +106,8 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		asrQueue:       make(chan segmentJob, 8),
 		shutdown:       deps.Shutdown,
 		discarded:      make(map[uint64]struct{}),
+		pendingSession: make(map[uint64]int),
+		deferred:       make(map[uint64]*deferredSession),
 	}
 	if deps.Focus != nil {
 		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
@@ -167,6 +171,12 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 			commit = true
 		}
 		if err := a.Stop(ctx, commit); err != nil {
+			code := codeFor(err)
+			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
+		}
+		return control.OK(req.ID, a.Status(ctx))
+	case "release":
+		if err := a.Release(ctx); err != nil {
 			code := codeFor(err)
 			return control.Fail(req.ID, code, err.Error(), a.Status(ctx))
 		}
@@ -289,6 +299,12 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.State = api.StateListening
 	a.status.Audio.Capturing = true
 	a.status.ASR.Loaded = a.engine != nil && a.engine.Loaded()
+	if deferredMode(mode) {
+		a.deferred[session] = &deferredSession{
+			mode:      mode,
+			caseState: inject.CaseState{AtBoundary: true},
+		}
+	}
 	a.mu.Unlock()
 	a.logInfo("capture started", "session", session)
 	go func() {
@@ -300,7 +316,22 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 }
 
 func (a *App) Stop(ctx context.Context, commit bool) error {
+	return a.stop(ctx, commit, nil)
+}
+
+func (a *App) Release(ctx context.Context) error {
+	mode := api.ModeHold
+	return a.stop(ctx, true, &mode)
+}
+
+func (a *App) stop(ctx context.Context, commit bool, expectedMode *api.Mode) error {
 	a.mu.Lock()
+	if expectedMode != nil && (a.status.Mode == nil || *a.status.Mode != *expectedMode) {
+		active := a.status.Mode
+		a.mu.Unlock()
+		a.logDebug("release ignored", "expected_mode", *expectedMode, "active_mode", active)
+		return nil
+	}
 	cancel := a.sessionCancel
 	captureDone := a.captureDone
 	session := a.currentSession
@@ -312,6 +343,9 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 	a.status.Audio.Capturing = false
 	if !commit {
 		a.discarded[session] = struct{}{}
+		if deferred := a.deferred[session]; deferred != nil {
+			deferred.parts = nil
+		}
 	}
 	pending := a.pendingASR
 	a.mu.Unlock()
@@ -347,11 +381,32 @@ func (a *App) Stop(ctx context.Context, commit bool) error {
 		}
 	}
 	a.mu.Lock()
-	if !commit || a.pendingASR == 0 {
+	finalize := false
+	if commit {
+		if deferred := a.deferred[session]; deferred != nil {
+			deferred.commitRequested = true
+			finalize = a.beginDeferredFinalizeLocked(session)
+		} else if a.pendingSession[session] == 0 {
+			a.status.State = api.StateIdle
+			a.status.Mode = nil
+		} else {
+			a.status.State = api.StateRecognizing
+		}
+	} else {
+		if a.pendingSession[session] == 0 {
+			deferred := a.deferred[session]
+			if deferred == nil || !deferred.finalizing {
+				delete(a.discarded, session)
+				delete(a.deferred, session)
+			}
+		}
 		a.status.State = api.StateIdle
 		a.status.Mode = nil
 	}
 	a.mu.Unlock()
+	if finalize {
+		go a.finalizeDeferred(session)
+	}
 	return nil
 }
 
@@ -360,7 +415,7 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 		return withCode("reload_unavailable", fmt.Errorf("config reload is unavailable"))
 	}
 	a.mu.Lock()
-	if a.capturing || a.pendingASR > 0 {
+	if a.capturing || a.pendingASR > 0 || len(a.deferred) > 0 {
 		a.mu.Unlock()
 		return withCode("busy", fmt.Errorf("cannot reload config while dictation is active"))
 	}
@@ -375,7 +430,7 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 	}
 
 	a.mu.Lock()
-	if a.capturing || a.pendingASR > 0 {
+	if a.capturing || a.pendingASR > 0 || len(a.deferred) > 0 {
 		a.mu.Unlock()
 		return withCode("busy", fmt.Errorf("cannot reload config while dictation is active"))
 	}
@@ -543,8 +598,12 @@ func (a *App) confirmASRBackend(engine asr.Engine, resolution asr.Resolution) {
 func (a *App) Toggle(ctx context.Context) error {
 	a.mu.Lock()
 	active := a.status.State != api.StateIdle && a.status.State != api.StateError
+	mode := a.status.Mode
 	a.mu.Unlock()
 	if active {
+		if mode == nil || *mode != api.ModeToggle {
+			return withCode("busy", fmt.Errorf("cannot toggle while %s dictation is active", modeName(mode)))
+		}
 		return a.Stop(ctx, true)
 	}
 	return a.Start(ctx, api.ModeToggle)
@@ -692,6 +751,7 @@ func (a *App) queueSegment(seg asr.AudioSegment) {
 	a.status.State = api.StateRecognizing
 	a.lastActivity = time.Now()
 	a.pendingASR++
+	a.pendingSession[session]++
 	pending := a.pendingASR
 	a.mu.Unlock()
 	if isShortSegment(seg) {
@@ -853,7 +913,6 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		return
 	}
 	if a.sessionDiscarded(job.session) {
-		a.setState(a.nextState())
 		return
 	}
 	if err := a.saveDebugSegment(seg); err != nil {
@@ -867,7 +926,6 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	cancel()
 	if err != nil {
 		if a.sessionDiscarded(job.session) {
-			a.setState(a.nextState())
 			return
 		}
 		a.logWarn("asr decode failed", append([]any{"session", job.session, "error", err}, segmentLogAttrs(seg)...)...)
@@ -875,7 +933,6 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		return
 	}
 	if a.sessionDiscarded(job.session) {
-		a.setState(a.nextState())
 		return
 	}
 	a.mu.Lock()
@@ -890,6 +947,10 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		"decode_ms", tr.DecodeDuration.Milliseconds(),
 		"rtf", tr.RealTimeFactor)
 	if tr.Empty {
+		a.setState(a.nextState())
+		return
+	}
+	if a.bufferDeferredTranscript(job.session, tr.Text) {
 		a.setState(a.nextState())
 		return
 	}
@@ -1000,7 +1061,10 @@ func recognitionErrorCode(err error) string {
 func (a *App) nextState() api.State {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.pendingASR > 0 {
+	if deferred := a.deferred[a.currentSession]; deferred != nil && deferred.finalizing {
+		return api.StateTyping
+	}
+	if a.pendingSession[a.currentSession] > 0 {
 		return api.StateRecognizing
 	}
 	if a.capturing {
@@ -1045,25 +1109,41 @@ func (a *App) sessionDiscarded(session uint64) bool {
 
 func (a *App) finishASRJob(session uint64) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.pendingASR > 0 {
 		a.pendingASR--
 	}
-	if a.pendingASR == 0 {
+	if a.pendingSession[session] > 0 {
+		a.pendingSession[session]--
+	}
+	remaining := a.pendingSession[session]
+	if remaining == 0 {
+		delete(a.pendingSession, session)
+	}
+	if _, discarded := a.discarded[session]; discarded && remaining == 0 {
 		delete(a.discarded, session)
-		switch a.status.State {
-		case api.StateRecognizing, api.StateTyping:
-			if a.capturing {
-				if a.segmentOpen {
-					a.status.State = api.StateSegmentOpen
-				} else {
-					a.status.State = api.StateListening
-				}
-			} else {
-				a.status.State = api.StateIdle
-				a.status.Mode = nil
-			}
+		delete(a.deferred, session)
+	}
+	finalize := a.beginDeferredFinalizeLocked(session)
+	if session == a.currentSession && !finalize {
+		switch {
+		case a.deferred[session] != nil && a.deferred[session].finalizing:
+			a.status.State = api.StateTyping
+		case remaining > 0:
+			a.status.State = api.StateRecognizing
+		case a.capturing && a.segmentOpen:
+			a.status.State = api.StateSegmentOpen
+		case a.capturing:
+			a.status.State = api.StateListening
+		case a.deferred[session] != nil && a.deferred[session].commitRequested:
+			a.status.State = api.StateTyping
+		default:
+			a.status.State = api.StateIdle
+			a.status.Mode = nil
 		}
+	}
+	a.mu.Unlock()
+	if finalize {
+		go a.finalizeDeferred(session)
 	}
 }
 
