@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import <nixpkgs> { }, withWhisper ? true }:
 
 let
   whisperCompat = pkgs.whisper-cpp-vulkan.overrideAttrs (old: {
@@ -15,7 +15,8 @@ let
 in
 pkgs.mkShell {
   nativeBuildInputs = [ pkgs.pkg-config ];
-  buildInputs = [ pkgs.pipewire whisperCompat pkgs.vulkan-loader ];
+  buildInputs = [ pkgs.pipewire ]
+    ++ pkgs.lib.optionals withWhisper [ whisperCompat pkgs.vulkan-loader ];
 
   CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
   LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];

@@ -18,10 +18,15 @@
           sed -i "s|^libdir=.*|libdir=$out/lib|" "$out/lib/pkgconfig/whisper.pc"
         '';
       });
-    in
-    {
-      packages = forAll (pkgs: {
-        default = pkgs.buildGoModule {
+      devShell = pkgs: { withWhisper ? true }: pkgs.mkShell {
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.pipewire pkgs.go ]
+          ++ pkgs.lib.optionals withWhisper [ (whisperCompat pkgs) pkgs.vulkan-loader ];
+        CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
+      };
+      waydictPackage = pkgs: pkgs.lib.makeOverridable
+        ({ withWhisper ? true }: pkgs.buildGoModule {
           pname = "waydict";
           version = "0.1.0";
           src = self;
@@ -31,7 +36,7 @@
           proxyVendor = true;
           vendorHash = "sha256-mbvsfsuwCrW2TaVmBF1GZ6UfXgZvMfGpgYFa2I3G8Ck=";
 
-          tags = [ "sherpa" "pipewire" "whispercpp" ];
+          tags = [ "sherpa" "pipewire" ] ++ pkgs.lib.optional withWhisper "whispercpp";
 
           # The cgo test binaries need sherpa/libstdc++ on the runtime linker
           # path; tests are run in the dev shell / CI, not in the package build.
@@ -40,7 +45,8 @@
           nativeBuildInputs = [ pkgs.pkg-config pkgs.autoPatchelfHook ];
           # pipewire: cgo pkg-config dep. stdenv.cc.cc.lib: libstdc++ for the
           # prebuilt sherpa/onnxruntime .so that autoPatchelfHook relocates.
-          buildInputs = [ pkgs.pipewire pkgs.stdenv.cc.cc.lib (whisperCompat pkgs) pkgs.vulkan-loader ];
+          buildInputs = [ pkgs.pipewire pkgs.stdenv.cc.cc.lib ]
+            ++ pkgs.lib.optionals withWhisper [ (whisperCompat pkgs) pkgs.vulkan-loader ];
 
           env.CGO_ENABLED = "1";
           env.CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
@@ -62,16 +68,18 @@
             mainProgram = "waydict";
             platforms = systems;
           };
-        };
+        })
+        { };
+    in
+    {
+      packages = forAll (pkgs: rec {
+        default = waydictPackage pkgs;
+        sherpa = default.override { withWhisper = false; };
       });
 
       devShells = forAll (pkgs: {
-        default = pkgs.mkShell {
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.pipewire pkgs.go (whisperCompat pkgs) pkgs.vulkan-loader ];
-          CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
-        };
+        default = devShell pkgs { };
+        sherpa = devShell pkgs { withWhisper = false; };
       });
     };
 }

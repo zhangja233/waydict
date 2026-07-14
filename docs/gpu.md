@@ -13,7 +13,7 @@ On AMD, Mesa RADV is the tested ICD. Development and measurements used an RX 570
 
 ## Build Setup
 
-On NixOS, the flake and `shell.nix` supply the patched `whisper-cpp-vulkan`, Vulkan loader, and pkg-config metadata; the flake package and Makefile enable the build tag. No ROCm or separate Whisper build setup is needed. The host still needs its normal Vulkan ICD and render-node permissions. The whisper.cpp package is patched because this cgo integration links the backends directly instead of calling dynamic backend loading.
+On NixOS, the default flake package and dev shell supply the patched `whisper-cpp-vulkan`, Vulkan loader, and pkg-config metadata; the default package and Makefile enable the build tag. The `sherpa` package and dev shell omit those dependencies and the `whispercpp` tag. No ROCm or separate Whisper build setup is needed. The host still needs its normal Vulkan ICD and render-node permissions. The whisper.cpp package is patched because this cgo integration links the backends directly instead of calling dynamic backend loading.
 
 Outside Nix, install a Vulkan-enabled libwhisper that provides `whisper.pc` to `pkg-config` at build time, plus the Vulkan loader and normal C/cgo toolchain. Build with the `whispercpp` tag shown in the README. At runtime the system ICD and `/dev/dri` access are still required.
 

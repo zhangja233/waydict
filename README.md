@@ -14,7 +14,7 @@ Runtime:
 - For GPU ASR, a Vulkan-capable GPU with a working ICD and an accessible `/dev/dri/renderD*` node.
 - Sway IPC only for the optional focus guard (cancel-on-focus-change); not required elsewhere.
 
-Build: Go with cgo, a C compiler, `pkg-config`, `libpipewire-0.3` headers, and Vulkan-enabled libwhisper. The Nix flake provides these.
+Build: Go with cgo, a C compiler, `pkg-config`, and `libpipewire-0.3` headers. The `whispercpp` build tag additionally requires Vulkan-enabled libwhisper and the Vulkan loader. The Nix flake provides these.
 
 ## Build
 
@@ -24,6 +24,13 @@ CGO_ENABLED=1 CGO_CFLAGS_ALLOW=-fno-strict-overflow \
 ```
 
 Omit the `whispercpp` tag when building for a CPU-only system without libwhisper. Tests that don't need native ASR libs: `go test ./...`.
+
+The default Nix package includes both engines. Build the sherpa-only variant without the Whisper or Vulkan dependencies for CPU-only systems:
+
+```sh
+nix build .#sherpa
+nix develop .#sherpa
+```
 
 ## Installation
 
