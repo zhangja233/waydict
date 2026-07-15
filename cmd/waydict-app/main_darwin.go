@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"waydict/internal/buildinfo"
 	"waydict/internal/config"
 	"waydict/internal/control"
+	"waydict/internal/hotkey"
 	"waydict/internal/macos/appkit"
 	"waydict/internal/model"
 	"waydict/internal/modelinstall"
@@ -63,15 +65,19 @@ func main() {
 }
 
 type appController struct {
-	host         *appkit.Host
-	cancel       context.CancelFunc
-	installation appkit.Installation
-	cfg          config.Config
-	services     platform.Services
-	runtime      *app.Runtime
-	installing   atomic.Bool
-	modelsReady  atomic.Bool
-	modelStatus  atomic.Value
+	host                  *appkit.Host
+	cancel                context.CancelFunc
+	installation          appkit.Installation
+	cfg                   config.Config
+	services              platform.Services
+	runtime               *app.Runtime
+	installing            atomic.Bool
+	modelsReady           atomic.Bool
+	modelStatus           atomic.Value
+	hotkeyEvents          chan hotkey.Event
+	hotkeyHold            uint64
+	hotkeyMu              sync.Mutex
+	hotkeyRestartRequired atomic.Bool
 }
 
 func (c *appController) run(ctx context.Context) {
@@ -115,6 +121,7 @@ func (c *appController) run(ctx context.Context) {
 		return
 	}
 	c.runtime = rt
+	c.hotkeyEvents = make(chan hotkey.Event, 64)
 
 	serveResults := make(chan error, 1)
 	go func() {
@@ -138,6 +145,9 @@ func (c *appController) run(ctx context.Context) {
 	}()
 
 	go c.dispatchEvents(ctx)
+	if err := c.syncHotkey(ctx, false); err != nil && apperr.Code(err) != apperr.CodePermissionInputMonitoringDenied {
+		c.host.ShowError(apperr.Code(err), err.Error())
+	}
 	go c.pollStatus(ctx)
 
 	select {
@@ -218,6 +228,10 @@ func (c *appController) dispatchEvents(ctx context.Context) {
 			if err := c.handleEvent(ctx, event); err != nil {
 				c.host.ShowError(apperr.Code(err), err.Error())
 			}
+		case event := <-c.hotkeyEvents:
+			if err := c.handleHotkeyEvent(ctx, event); err != nil {
+				c.host.ShowError(apperr.Code(err), err.Error())
+			}
 		}
 	}
 }
@@ -239,7 +253,10 @@ func (c *appController) handleEvent(ctx context.Context, event appkit.Event) err
 	case appkit.ActionStopDiscard:
 		return c.runtime.App.Stop(ctx, false)
 	case appkit.ActionReloadConfig:
-		return c.runtime.App.ReloadConfig(ctx)
+		if err := c.runtime.App.ReloadConfig(ctx); err != nil {
+			return err
+		}
+		return c.syncHotkey(ctx, true)
 	case appkit.ActionInstallRequiredModels:
 		go func() {
 			if err := c.installRequiredModels(ctx); err != nil {
@@ -262,7 +279,10 @@ func (c *appController) handleEvent(ctx context.Context, event appkit.Event) err
 		if event.Payload != "hold" && event.Payload != "toggle" && event.Payload != "oneshot" {
 			return fmt.Errorf("invalid hotkey mode %q", event.Payload)
 		}
-		return c.runtime.App.SetHotkeyMode(ctx, event.Payload)
+		if err := c.runtime.App.SetHotkeyMode(ctx, event.Payload); err != nil {
+			return err
+		}
+		return c.syncHotkey(ctx, false)
 	case appkit.ActionRequestMicrophonePermission:
 		return c.requestPermission(ctx, permissions.KindMicrophone)
 	case appkit.ActionRequestAccessibilityPermission:
@@ -284,6 +304,9 @@ func (c *appController) handleEvent(ctx context.Context, event appkit.Event) err
 	case appkit.ActionOpenConfig:
 		return c.openConfig(ctx)
 	case appkit.ActionRestartRuntime:
+		if c.hotkeyRestartRequired.Load() {
+			return c.syncHotkey(ctx, true)
+		}
 		return c.runtime.App.RestartRuntime(ctx)
 	case appkit.ActionOpenLog:
 		return c.openLog(ctx)
@@ -348,6 +371,118 @@ func (c *appController) activateTarget(ctx context.Context, pid int) error {
 	return nil
 }
 
+func (c *appController) handleHotkeyEvent(ctx context.Context, event hotkey.Event) error {
+	service := c.runtime.Platform.Hotkey
+	if service == nil {
+		return apperr.New(apperr.CodeHotkeyUnavailable, "dispatch global hotkey", errors.New("hotkey service is unavailable"))
+	}
+	mode := service.Status().Binding.Mode
+	switch event.Action {
+	case hotkey.Press:
+		switch mode {
+		case hotkey.ModeHold:
+			if _, _, active := c.runtime.App.ActiveSession(); active {
+				return nil
+			}
+			if err := c.runtime.App.StartWithOptions(ctx, app.StartOptions{
+				Mode:   api.ModeHold,
+				Origin: app.StartOriginHotkey,
+			}); err != nil {
+				return err
+			}
+			if session, activeMode, active := c.runtime.App.ActiveSession(); active && activeMode == api.ModeHold {
+				c.hotkeyHold = session
+			}
+			return nil
+		case hotkey.ModeToggle:
+			return c.runtime.App.ToggleWithOptions(ctx, app.StartOptions{
+				Origin: app.StartOriginHotkey,
+			})
+		case hotkey.ModeOneshot:
+			return c.runtime.App.StartWithOptions(ctx, app.StartOptions{
+				Mode:   api.ModeOneshot,
+				Origin: app.StartOriginHotkey,
+			})
+		default:
+			return apperr.New(apperr.CodeHotkeyUnavailable, "dispatch global hotkey", fmt.Errorf("unsupported mode %q", mode))
+		}
+	case hotkey.Release:
+		session := c.hotkeyHold
+		c.hotkeyHold = 0
+		if activeSession, activeMode, active := c.runtime.App.ActiveSession(); active && activeMode == api.ModeHold && activeSession == session && session != 0 {
+			return c.runtime.App.Release(ctx)
+		}
+		return nil
+	case hotkey.Abort:
+		session := c.hotkeyHold
+		c.hotkeyHold = 0
+		if activeSession, activeMode, active := c.runtime.App.ActiveSession(); active && activeMode == api.ModeHold && activeSession == session && session != 0 {
+			return c.runtime.App.Stop(ctx, false)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported hotkey action %q", event.Action)
+	}
+}
+
+func (c *appController) syncHotkey(ctx context.Context, retryUnavailable bool) error {
+	c.hotkeyMu.Lock()
+	defer c.hotkeyMu.Unlock()
+	service := c.runtime.Platform.Hotkey
+	if service == nil {
+		return apperr.New(apperr.CodeHotkeyUnavailable, "configure global hotkey", errors.New("hotkey service is unavailable"))
+	}
+	enabled, binding, err := c.runtime.App.HotkeyBinding()
+	if err != nil {
+		return apperr.New(apperr.CodeConfigInvalid, "resolve global hotkey", err)
+	}
+	status := service.Status()
+	if !enabled {
+		c.hotkeyRestartRequired.Store(false)
+		if status.Running {
+			return service.Stop(ctx)
+		}
+		return nil
+	}
+	if c.runtime.Platform.PermissionSource == nil {
+		return apperr.New(apperr.CodeHotkeyUnavailable, "configure global hotkey", errors.New("permission service is unavailable"))
+	}
+	snapshot, err := c.runtime.Platform.PermissionSource.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if snapshot.InputMonitoring != permissions.Granted {
+		return apperr.New(apperr.CodePermissionInputMonitoringDenied, "configure global hotkey", errors.New("Input Monitoring permission is not granted"))
+	}
+	if status.Running {
+		if status.Binding != binding {
+			if err := service.Rebind(ctx, binding); err != nil {
+				return err
+			}
+		}
+		c.hotkeyRestartRequired.Store(false)
+		return nil
+	}
+	if !retryUnavailable && status.LastErrorCode != "" && status.LastErrorCode != apperr.CodePermissionInputMonitoringDenied {
+		return apperr.New(status.LastErrorCode, "configure global hotkey", errors.New("listener is unavailable"))
+	}
+	if err := service.Stop(ctx); err != nil {
+		return err
+	}
+	handler := func(event hotkey.Event) {
+		select {
+		case c.hotkeyEvents <- event:
+		case <-ctx.Done():
+		}
+	}
+	if err := service.Start(ctx, binding, handler); err != nil {
+		c.hotkeyRestartRequired.Store(true)
+		return err
+	}
+	c.hotkeyRestartRequired.Store(false)
+	return nil
+}
+
 func (c *appController) requestPermission(ctx context.Context, kind permissions.Kind) error {
 	if c.runtime.Platform.PermissionSource == nil {
 		return errors.New("permission service is unavailable")
@@ -363,6 +498,12 @@ func (c *appController) requestPermission(ctx context.Context, kind permissions.
 	if kind == permissions.KindMicrophone && state == permissions.Restricted {
 		return apperr.New(apperr.CodePermissionMicrophoneDenied, "request microphone permission", errors.New("microphone permission is restricted"))
 	}
+	if kind == permissions.KindInputMonitoring && state == permissions.Granted {
+		if err := c.syncHotkey(ctx, true); err != nil {
+			c.hotkeyRestartRequired.Store(true)
+			return apperr.New(apperr.CodeHotkeyUnavailable, "enable global hotkey", fmt.Errorf("%v; restart Waydict to retry", err))
+		}
+	}
 	return nil
 }
 
@@ -371,6 +512,23 @@ func (c *appController) pollStatus(ctx context.Context) {
 	havePrevious := false
 	for {
 		view := c.currentView(ctx)
+		granted := view.InputMonitoring == string(permissions.Granted)
+		enabled, _, bindingErr := c.runtime.App.HotkeyBinding()
+		if !enabled {
+			c.hotkeyRestartRequired.Store(false)
+		}
+		if granted && enabled && bindingErr == nil && c.runtime.Platform.Hotkey != nil {
+			hotkeyStatus := c.runtime.Platform.Hotkey.Status()
+			if !hotkeyStatus.Running && hotkeyStatus.LastErrorCode != "" && hotkeyStatus.LastErrorCode != apperr.CodePermissionInputMonitoringDenied {
+				c.hotkeyRestartRequired.Store(true)
+			}
+			if !hotkeyStatus.Running && !c.hotkeyRestartRequired.Load() {
+				if err := c.syncHotkey(ctx, true); err != nil {
+					c.hotkeyRestartRequired.Store(true)
+					c.host.ShowError(apperr.Code(err), fmt.Sprintf("%v; restart Waydict to retry", err))
+				}
+			}
+		}
 		if !havePrevious || !reflect.DeepEqual(view, previous) {
 			_ = c.host.Update(view)
 			previous = view
@@ -451,7 +609,10 @@ func (c *appController) currentView(ctx context.Context) appkit.ViewModel {
 	if view.ASRProvider == "" {
 		view.ASRProvider = status.ASR.Provider
 	}
-	view.PendingRestart = status.PendingRestart
+	view.PendingRestart = status.PendingRestart || c.hotkeyRestartRequired.Load()
+	if c.hotkeyRestartRequired.Load() && view.LastWarning == "" {
+		view.LastWarning = "Restart Waydict to retry the global shortcut."
+	}
 	if c.runtime.Platform.LoginItem != nil {
 		loginCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		enabled, err := c.runtime.Platform.LoginItem.Status(loginCtx)
@@ -511,6 +672,8 @@ func hotkeyDescription(modifiers []string, key string) string {
 	}
 	if strings.EqualFold(key, "space") {
 		value.WriteString("Space")
+	} else if strings.HasPrefix(key, "keycode:") {
+		value.WriteString(key)
 	} else {
 		value.WriteString(strings.ToUpper(key))
 	}

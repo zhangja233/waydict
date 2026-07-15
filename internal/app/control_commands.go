@@ -321,6 +321,9 @@ func (a *App) SetHotkeyMode(ctx context.Context, mode string) error {
 	if mode != "hold" && mode != "toggle" && mode != "oneshot" {
 		return withCode("usage", fmt.Errorf("mode must be hold, toggle, or oneshot"))
 	}
+	if err := a.requireIdle(); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	controlled := a.cfg.IsExplicit("hotkey.mode")
 	a.mu.Unlock()
@@ -340,7 +343,7 @@ func (a *App) SetHotkeyMode(ctx context.Context, mode string) error {
 	}
 	cfg := a.cfg.Hotkey
 	a.mu.Unlock()
-	if a.hotkey != nil {
+	if a.hotkey != nil && a.hotkey.Status().Running {
 		binding, err := hotkeyBinding(cfg)
 		if err != nil {
 			return err
@@ -352,17 +355,20 @@ func (a *App) SetHotkeyMode(ctx context.Context, mode string) error {
 	return nil
 }
 
-func hotkeyBinding(cfg config.Hotkey) (hotkey.Binding, error) {
-	modifiers, err := hotkey.ParseModifiers(cfg.Modifiers)
-	if err != nil {
-		return hotkey.Binding{}, err
+func (a *App) HotkeyBinding() (bool, hotkey.Binding, error) {
+	a.mu.Lock()
+	cfg := a.cfg.Hotkey
+	cfg.Modifiers = append([]string(nil), cfg.Modifiers...)
+	a.mu.Unlock()
+	if !cfg.Enabled {
+		return false, hotkey.Binding{}, nil
 	}
-	return hotkey.Binding{
-		Key:       cfg.Key,
-		KeyCode:   uint16(max(cfg.KeyCode, 0)),
-		Modifiers: modifiers,
-		Mode:      hotkey.Mode(cfg.Mode),
-	}, nil
+	binding, err := hotkeyBinding(cfg)
+	return true, binding, err
+}
+
+func hotkeyBinding(cfg config.Hotkey) (hotkey.Binding, error) {
+	return hotkey.ResolveBinding(cfg.Key, cfg.KeyCode, cfg.Modifiers, hotkey.Mode(cfg.Mode))
 }
 
 func (a *App) RestartRuntime(ctx context.Context) error {

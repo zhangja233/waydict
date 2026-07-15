@@ -419,6 +419,18 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 			edit: func(c *Config) { c.Injection.WtypePath = "" },
 		},
 		{
+			name: "hotkey key code",
+			edit: func(c *Config) { c.Hotkey.KeyCode = 65536 },
+		},
+		{
+			name: "hotkey symbolic key",
+			edit: func(c *Config) { c.Hotkey.Key = "delete" },
+		},
+		{
+			name: "hotkey duplicate modifier",
+			edit: func(c *Config) { c.Hotkey.Modifiers = []string{"shift", "shift"} },
+		},
+		{
 			name: "debug save audio dir",
 			edit: func(c *Config) {
 				c.Debug.SaveAudioSegments = true
@@ -460,7 +472,7 @@ func TestDefaultsForPlatform(t *testing.T) {
 			if !cfg.Focus.Enabled || cfg.Focus.Backend != "auto" || cfg.Focus.Policy != "cancel_on_focus_change" {
 				t.Fatalf("Darwin focus defaults = %#v", cfg.Focus)
 			}
-			if !cfg.Hotkey.Enabled || cfg.Hotkey.Key != "space" || cfg.Hotkey.Mode != "hold" || len(cfg.Hotkey.Modifiers) != 3 {
+			if !cfg.Hotkey.Enabled || cfg.Hotkey.Key != "space" || cfg.Hotkey.KeyCode != -1 || cfg.Hotkey.Mode != "hold" || len(cfg.Hotkey.Modifiers) != 3 {
 				t.Fatalf("Darwin hotkey defaults = %#v", cfg.Hotkey)
 			}
 		})

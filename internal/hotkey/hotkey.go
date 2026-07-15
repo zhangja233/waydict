@@ -26,18 +26,23 @@ const (
 func ParseModifiers(names []string) (Modifiers, error) {
 	var modifiers Modifiers
 	for _, name := range names {
+		var modifier Modifiers
 		switch name {
 		case "control":
-			modifiers |= ModifierControl
+			modifier = ModifierControl
 		case "shift":
-			modifiers |= ModifierShift
+			modifier = ModifierShift
 		case "option":
-			modifiers |= ModifierOption
+			modifier = ModifierOption
 		case "command":
-			modifiers |= ModifierCommand
+			modifier = ModifierCommand
 		default:
 			return 0, fmt.Errorf("unsupported hotkey modifier %q", name)
 		}
+		if modifiers&modifier != 0 {
+			return 0, fmt.Errorf("duplicate hotkey modifier %q", name)
+		}
+		modifiers |= modifier
 	}
 	return modifiers, nil
 }

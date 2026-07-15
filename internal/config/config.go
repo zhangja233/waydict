@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"waydict/internal/asr"
+	"waydict/internal/hotkey"
 )
 
 type Config struct {
@@ -464,29 +465,11 @@ func (c Config) ValidateFor(capabilities CapabilitySet) error {
 	if policy != "cancel_on_focus_change" && policy != "warn_and_type" && policy != "type_current" {
 		return fmt.Errorf("unsupported focus.policy %q", policy)
 	}
-	if c.Hotkey.Enabled {
-		if !capabilities.HotkeyAllowed {
-			return fmt.Errorf("hotkey.enabled is unsupported on %s", capabilities.Platform)
-		}
-		if strings.TrimSpace(c.Hotkey.Key) == "" && c.Hotkey.KeyCode < 0 {
-			return fmt.Errorf("hotkey.key must not be empty when key_code is unset")
-		}
-		if c.Hotkey.KeyCode < -1 || c.Hotkey.KeyCode > 127 {
-			return fmt.Errorf("hotkey.key_code must be between -1 and 127")
-		}
-		if c.Hotkey.Mode != "hold" && c.Hotkey.Mode != "toggle" && c.Hotkey.Mode != "oneshot" {
-			return fmt.Errorf("hotkey.mode must be hold, toggle, or oneshot")
-		}
-		seen := make(map[string]bool)
-		for _, modifier := range c.Hotkey.Modifiers {
-			if modifier != "control" && modifier != "shift" && modifier != "option" && modifier != "command" {
-				return fmt.Errorf("unsupported hotkey modifier %q", modifier)
-			}
-			if seen[modifier] {
-				return fmt.Errorf("duplicate hotkey modifier %q", modifier)
-			}
-			seen[modifier] = true
-		}
+	if c.Hotkey.Enabled && !capabilities.HotkeyAllowed {
+		return fmt.Errorf("hotkey.enabled is unsupported on %s", capabilities.Platform)
+	}
+	if _, err := hotkey.ResolveBinding(c.Hotkey.Key, c.Hotkey.KeyCode, c.Hotkey.Modifiers, hotkey.Mode(c.Hotkey.Mode)); err != nil {
+		return err
 	}
 	if c.Debug.SaveAudioSegments && strings.TrimSpace(c.Debug.SaveAudioDir) == "" {
 		return fmt.Errorf("debug.save_audio_dir must not be empty when debug.save_audio_segments is true")

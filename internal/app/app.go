@@ -226,10 +226,14 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		}
 	}
 	if deps.Hotkey != nil || cfg.Hotkey.Enabled {
+		key := cfg.Hotkey.Key
+		if binding, err := hotkeyBinding(cfg.Hotkey); err == nil {
+			key = binding.Key
+		}
 		a.status.Hotkey = &api.HotkeyStatus{
 			Enabled:   cfg.Hotkey.Enabled,
 			Available: deps.Hotkey != nil,
-			Key:       cfg.Hotkey.Key,
+			Key:       key,
 			Modifiers: append([]string(nil), cfg.Hotkey.Modifiers...),
 			Mode:      api.Mode(cfg.Hotkey.Mode),
 		}
@@ -611,8 +615,12 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 		a.status.Platform.MigrationWarnings = cfg.MigrationWarnings()
 	}
 	if a.status.Hotkey != nil {
+		key := active.Hotkey.Key
+		if binding, err := hotkeyBinding(active.Hotkey); err == nil {
+			key = binding.Key
+		}
 		a.status.Hotkey.Enabled = active.Hotkey.Enabled
-		a.status.Hotkey.Key = active.Hotkey.Key
+		a.status.Hotkey.Key = key
 		a.status.Hotkey.Modifiers = append([]string(nil), active.Hotkey.Modifiers...)
 		a.status.Hotkey.Mode = api.Mode(active.Hotkey.Mode)
 	}
@@ -628,13 +636,19 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 			return err
 		}
 	}
-	if hotkeyChanged && active.Hotkey.Enabled && a.hotkey != nil {
-		binding, err := hotkeyBinding(active.Hotkey)
-		if err != nil {
-			return err
-		}
-		if err := a.hotkey.Rebind(ctx, binding); err != nil {
-			return err
+	if hotkeyChanged && a.hotkey != nil {
+		if !active.Hotkey.Enabled {
+			if err := a.hotkey.Stop(ctx); err != nil {
+				return err
+			}
+		} else if a.hotkey.Status().Running {
+			binding, err := hotkeyBinding(active.Hotkey)
+			if err != nil {
+				return err
+			}
+			if err := a.hotkey.Rebind(ctx, binding); err != nil {
+				return err
+			}
 		}
 	}
 	a.logInfo("config reloaded",
@@ -822,6 +836,11 @@ func (a *App) confirmASRBackend(engine asr.Engine, resolution asr.Resolution) {
 }
 
 func (a *App) Toggle(ctx context.Context) error {
+	return a.ToggleWithOptions(ctx, StartOptions{Mode: api.ModeToggle, Origin: StartOriginControl})
+}
+
+func (a *App) ToggleWithOptions(ctx context.Context, opts StartOptions) error {
+	opts.Mode = api.ModeToggle
 	a.mu.Lock()
 	active := a.status.State != api.StateIdle && a.status.State != api.StateError
 	mode := a.status.Mode
@@ -832,7 +851,16 @@ func (a *App) Toggle(ctx context.Context) error {
 		}
 		return a.Stop(ctx, true)
 	}
-	return a.Start(ctx, api.ModeToggle)
+	return a.StartWithOptions(ctx, opts)
+}
+
+func (a *App) ActiveSession() (uint64, api.Mode, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status.State == api.StateIdle || a.status.State == api.StateError || a.status.Mode == nil {
+		return 0, "", false
+	}
+	return a.currentSession, *a.status.Mode, true
 }
 
 func (a *App) Status(ctx context.Context) api.Status {

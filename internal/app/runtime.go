@@ -279,6 +279,11 @@ func (r *Runtime) Close(ctx context.Context) error {
 	var errs []error
 	if r.App != nil {
 		status := r.App.Status(context.Background())
+		if r.App.hotkey != nil {
+			if err := r.App.hotkey.Stop(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
 		if status.State != api.StateIdle {
 			if err := r.App.Stop(ctx, false); err != nil {
 				errs = append(errs, err)

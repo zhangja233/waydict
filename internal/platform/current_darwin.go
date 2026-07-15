@@ -8,6 +8,7 @@ import (
 	"waydict/internal/config"
 	"waydict/internal/focus"
 	macosfocus "waydict/internal/focus/macos"
+	macoshotkey "waydict/internal/hotkey/macos"
 	"waydict/internal/inject"
 	"waydict/internal/inject/quartz"
 	"waydict/internal/macos/appkit"
@@ -21,6 +22,7 @@ func currentDarwinServices() Services {
 	services.Capabilities.Host = "macos_app"
 	services.Capabilities.InjectionBackends = []string{"quartz"}
 	services.Capabilities.FocusBackends = []string{"accessibility"}
+	services.Capabilities.HotkeyAvailable = macoshotkey.Supported
 	if buildinfo.WhisperEnabled {
 		services.Capabilities.WhisperProviders = []string{asr.ProviderMetal, asr.ProviderCPU}
 	}
@@ -28,6 +30,7 @@ func currentDarwinServices() Services {
 		services.Capabilities.SherpaProviders = []string{asr.ProviderCPU}
 	}
 	services.Permissions = macospermissions.New()
+	services.Hotkey = macoshotkey.New()
 	services.LoginItem = macosloginitem.New()
 	services.Preferences = macosuserdefaults.New()
 	services.AppActivation = appkit.NewActivator()
