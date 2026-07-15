@@ -38,18 +38,31 @@ func (f *FakeEngine) Transcribe(_ context.Context, seg asr.AudioSegment) (asr.Tr
 }
 
 type MemoryInjector struct {
-	Texts []string
-	Err   error
+	Texts    []string
+	Requests []inject.Request
+	Err      error
 }
+
+func (m *MemoryInjector) Backend() string { return "memory" }
 
 func (m *MemoryInjector) Available(context.Context) error { return m.Err }
 
-func (m *MemoryInjector) TypeText(_ context.Context, text string) error {
+func (m *MemoryInjector) Inject(ctx context.Context, request inject.Request) error {
 	if m.Err != nil {
 		return m.Err
 	}
-	m.Texts = append(m.Texts, text)
+	if request.ValidateTarget != nil {
+		if err := request.ValidateTarget(ctx, request.Target.Focus); err != nil {
+			return err
+		}
+	}
+	m.Requests = append(m.Requests, request)
+	m.Texts = append(m.Texts, request.Text)
 	return nil
+}
+
+func (m *MemoryInjector) TypeText(ctx context.Context, text string) error {
+	return m.Inject(ctx, inject.Request{Text: text})
 }
 
 var _ inject.Injector = (*MemoryInjector)(nil)

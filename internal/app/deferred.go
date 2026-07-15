@@ -3,8 +3,9 @@ package app
 import (
 	"strings"
 
+	"waydict/internal/apperr"
+	"waydict/internal/focus"
 	"waydict/internal/inject"
-	"waydict/internal/swayipc"
 	"waydict/pkg/api"
 )
 
@@ -87,7 +88,7 @@ func (a *App) finalizeDeferred(session uint64) {
 		return
 	}
 	text := strings.Join(deferred.parts, "")
-	focusCheck := a.cfg.Sway.FocusCheck
+	focusCheck := a.cfg.Focus.Enabled
 	redacted := a.cfg.Daemon.RedactTranscriptsInLogs
 	a.mu.Unlock()
 
@@ -97,32 +98,29 @@ func (a *App) finalizeDeferred(session uint64) {
 	}
 
 	ctx := a.rootCtx
-	var focusWarning *swayipc.FocusChange
-	if a.guard != nil && focusCheck {
-		var err error
-		focusWarning, err = a.guard.CheckWithWarning(ctx)
-		if err != nil {
-			a.logWarn("focus guard cancelled deferred injection", "session", session, "error", err)
-			a.recordCanceledTranscript(text, err)
-			a.finishDeferred(session)
-			return
-		}
-	}
+	var focusWarning *focus.Change
 	if a.sessionDiscarded(session) {
 		a.finishDeferred(session)
 		return
 	}
 	if a.injector != nil {
 		a.logDebug("typing deferred transcript", "session", session, "text_bytes", len(text), "redacted", redacted)
-		if err := a.injector.TypeText(ctx, text); err != nil {
-			a.recordUninjected(text, err)
+		var err error
+		focusWarning, err = a.injectText(ctx, text)
+		if err != nil {
+			if focusCheck && isFocusError(err) {
+				a.logWarn("focus guard cancelled deferred injection", "session", session, "error", err)
+				a.recordCanceledTranscript(text, err)
+			} else {
+				a.recordUninjected(text, err)
+			}
 			a.finishDeferred(session)
 			return
 		}
 	}
 	a.recordTranscript(text)
 	if focusWarning != nil {
-		a.recordWarning("focus_changed", focusWarning.Error())
+		a.recordWarning(apperr.CodeFocusChanged, focusWarning.Error())
 	}
 	a.finishDeferred(session)
 }
@@ -137,4 +135,7 @@ func (a *App) finishDeferred(session uint64) {
 		a.segmentOpen = false
 	}
 	a.mu.Unlock()
+	if a.guard != nil {
+		a.guard.Reset()
+	}
 }

@@ -109,6 +109,12 @@ func Defaults() Config {
 			AppendSpace: true,
 			FocusPolicy: "cancel_on_focus_change",
 		},
+		Focus: Focus{
+			Enabled:  true,
+			Backend:  "sway",
+			Required: true,
+			Socket:   os.Getenv("SWAYSOCK"),
+		},
 		PostProcess: PostProcess{
 			TrimLeading:              true,
 			CollapseSpaces:           true,

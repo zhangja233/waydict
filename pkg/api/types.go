@@ -1,5 +1,7 @@
 package api
 
+import "time"
+
 type State string
 
 const (
@@ -42,11 +44,14 @@ type Status struct {
 }
 
 type AudioStatus struct {
-	Backend    string  `json:"backend"`
-	SampleRate int     `json:"sample_rate"`
-	LevelDBFS  float64 `json:"level_dbfs"`
-	Overruns   uint64  `json:"overruns"`
-	Capturing  bool    `json:"capturing"`
+	Backend      string        `json:"backend"`
+	SampleRate   int           `json:"sample_rate"`
+	LevelDBFS    float64       `json:"level_dbfs"`
+	Overruns     uint64        `json:"overruns"`
+	Capturing    bool          `json:"capturing"`
+	DeviceID     string        `json:"device_id,omitempty"`
+	DeviceName   string        `json:"device_name,omitempty"`
+	InputLatency time.Duration `json:"input_latency,omitempty"`
 }
 
 // VADStatus reports the voice-activity-detection engine actually in use. It can
@@ -79,11 +84,18 @@ type InjectionStatus struct {
 }
 
 type FocusStatus struct {
-	Sway        bool   `json:"sway"`
-	FocusedID   int64  `json:"focused_id,omitempty"`
-	FocusedName string `json:"focused_name,omitempty"`
-	AppID       string `json:"app_id,omitempty"`
-	Class       string `json:"class,omitempty"`
-	Workspace   string `json:"workspace,omitempty"`
-	Output      string `json:"output,omitempty"`
+	Backend        string `json:"backend,omitempty"`
+	Available      bool   `json:"available,omitempty"`
+	StableID       string `json:"stable_id,omitempty"`
+	AppName        string `json:"app_name,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	SecureField    bool   `json:"secure_field,omitempty"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	Sway           bool   `json:"sway"`
+	FocusedID      int64  `json:"focused_id,omitempty"`
+	FocusedName    string `json:"focused_name,omitempty"`
+	AppID          string `json:"app_id,omitempty"`
+	Class          string `json:"class,omitempty"`
+	Workspace      string `json:"workspace,omitempty"`
+	Output         string `json:"output,omitempty"`
 }

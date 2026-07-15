@@ -4,15 +4,32 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"waydict/internal/apperr"
 )
 
-var ErrUnavailable = errors.New("pipewire capture unavailable")
+var ErrUnavailable = apperr.New(apperr.CodeAudioBackendUnavailable, "audio capture", errors.New("capture backend unavailable"))
 
 type Stats struct {
-	SampleRate int
-	LevelDBFS  float64
-	Overruns   uint64
-	Capturing  bool
+	Backend      string
+	SampleRate   int
+	LevelDBFS    float64
+	Overruns     uint64
+	Capturing    bool
+	DeviceID     string
+	DeviceName   string
+	InputLatency time.Duration
+}
+
+type Device struct {
+	ID        string
+	Name      string
+	Default   bool
+	Connected bool
+}
+
+type DeviceManager interface {
+	Devices(context.Context) ([]Device, error)
 }
 
 type Source interface {
@@ -75,7 +92,7 @@ func (s *ScriptedSource) Stats() Stats {
 	if rate == 0 {
 		rate = 16000
 	}
-	return Stats{SampleRate: rate, LevelDBFS: LevelDBFS(lastChunk(s.Chunks, s.index)), Capturing: s.capturing}
+	return Stats{Backend: "scripted", SampleRate: rate, LevelDBFS: LevelDBFS(lastChunk(s.Chunks, s.index)), Capturing: s.capturing}
 }
 
 func lastChunk(chunks [][]float32, index int) []float32 {

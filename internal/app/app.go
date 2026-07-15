@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,12 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"waydict/internal/apperr"
 	"waydict/internal/asr"
 	"waydict/internal/audio"
 	"waydict/internal/config"
 	"waydict/internal/control"
+	"waydict/internal/focus"
 	"waydict/internal/inject"
-	"waydict/internal/swayipc"
 	"waydict/internal/vad"
 	"waydict/pkg/api"
 )
@@ -33,7 +33,7 @@ type Dependencies struct {
 	ASRResolution  asr.Resolution
 	ASRFallback    func() (asr.Engine, asr.Resolution, error)
 	Injector       inject.Injector
-	Focus          *swayipc.Client
+	Focus          focus.Provider
 	Logger         *slog.Logger
 	Shutdown       func()
 }
@@ -49,8 +49,8 @@ type App struct {
 	asrResolution  asr.Resolution
 	asrFallback    func() (asr.Engine, asr.Resolution, error)
 	injector       inject.Injector
-	guard          *swayipc.Guard
-	focus          *swayipc.Client
+	guard          *focus.Guard
+	focus          focus.Provider
 	logger         *slog.Logger
 	post           inject.PostProcessor
 	caseState      inject.CaseState
@@ -110,7 +110,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		deferred:       make(map[uint64]*deferredSession),
 	}
 	if deps.Focus != nil {
-		a.guard = swayipc.NewGuard(deps.Focus, cfg.Injection.FocusPolicy)
+		a.guard = focus.NewGuard(deps.Focus, focus.Policy(cfg.Injection.FocusPolicy))
 	}
 	vadEngine := ""
 	if deps.Segmenter != nil {
@@ -135,10 +135,12 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 			Loaded:           deps.Engine != nil && deps.Engine.Loaded(),
 		},
 		Injection: api.InjectionStatus{
-			Engine: cfg.Injection.Engine,
+			Engine: injectorBackend(deps.Injector, cfg.Injection.Engine),
 		},
 		Focus: api.FocusStatus{
-			Sway: deps.Focus != nil,
+			Backend:   focusBackend(deps.Focus),
+			Available: deps.Focus != nil,
+			Sway:      deps.Focus != nil && deps.Focus.Backend() == "sway",
 		},
 		LastTranscriptRedacted: cfg.Daemon.RedactTranscriptsInLogs,
 	}
@@ -209,43 +211,64 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 	}
 }
 
+type StartOrigin string
+
+const (
+	StartOriginControl StartOrigin = "control"
+	StartOriginHotkey  StartOrigin = "hotkey"
+	StartOriginMenu    StartOrigin = "menu"
+	StartOriginTest    StartOrigin = "onboarding_test"
+)
+
+type StartOptions struct {
+	Mode             api.Mode
+	Origin           StartOrigin
+	ExpectedFocusPID int
+}
+
 func (a *App) Start(ctx context.Context, mode api.Mode) error {
+	return a.StartWithOptions(ctx, StartOptions{Mode: mode, Origin: StartOriginControl})
+}
+
+func (a *App) StartWithOptions(ctx context.Context, opts StartOptions) error {
+	if opts.Origin == "" {
+		opts.Origin = StartOriginControl
+	}
 	a.mu.Lock()
 	if a.status.State != api.StateIdle && a.status.State != api.StateError {
 		state := a.status.State
 		a.mu.Unlock()
-		a.logDebug("start ignored", "mode", mode, "state", state)
+		a.logDebug("start ignored", "mode", opts.Mode, "origin", opts.Origin, "state", state)
 		return nil
 	}
 	a.status.State = api.StateArming
-	a.status.Mode = modePtr(mode)
+	a.status.Mode = modePtr(opts.Mode)
 	a.status.LastError = nil
 	a.status.LastWarning = nil
 	a.caseState = inject.CaseState{AtBoundary: true}
 	a.currentSession++
 	session := a.currentSession
 	a.mu.Unlock()
-	a.logInfo("start requested", "session", session, "mode", mode)
+	a.logInfo("start requested", "session", session, "mode", opts.Mode, "origin", opts.Origin)
+
+	if a.guard != nil && a.cfg.Focus.Enabled {
+		a.guard.Reset()
+		if err := a.guard.CaptureStart(ctx, opts.ExpectedFocusPID); err != nil {
+			return a.failStart(apperr.CodeFocusUnavailable, "capture session focus", err)
+		}
+		a.recordFocus(a.guard.StartedMetadata())
+	}
 
 	if a.injector != nil {
 		a.logDebug("checking injector", "session", session)
 		if err := a.injector.Available(ctx); err != nil {
-			a.recordError(api.StateIdle, "wtype_unavailable", err)
-			return withCode("wtype_unavailable", err)
+			return a.failStart(apperr.CodeInjectorUnavailable, "check injector", err)
 		}
 	}
 	if a.engine != nil && !a.engine.Loaded() {
 		if err := a.loadASR(ctx, session); err != nil {
-			a.recordError(api.StateIdle, "model_invalid", err)
-			return withCode("model_invalid", err)
+			return a.failStart(apperr.CodeASRModelInvalid, "load recognition model", err)
 		}
-	}
-	if a.guard != nil && a.cfg.Sway.FocusCheck {
-		if err := a.guard.CaptureStart(ctx); err != nil {
-			a.recordError(api.StateIdle, "sway_unavailable", err)
-			return withCode("sway_unavailable", err)
-		}
-		a.recordFocus(a.guard.StartedFocus())
 	}
 	a.mu.Lock()
 	src := a.source
@@ -253,8 +276,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	if src == nil {
 		a.logInfo("audio source recreate start", "session", session)
 		if err := a.recreateSource(ctx); err != nil {
-			a.recordError(api.StateIdle, "pipewire_unavailable", err)
-			return withCode("pipewire_unavailable", err)
+			return a.failStart(apperr.CodeAudioBackendUnavailable, "create audio source", err)
 		}
 		a.logInfo("audio source recreate complete", "session", session)
 	}
@@ -262,17 +284,15 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	src = a.source
 	a.mu.Unlock()
 	if src == nil {
-		err := audio.ErrUnavailable
-		a.recordError(api.StateIdle, "pipewire_unavailable", err)
-		return withCode("pipewire_unavailable", err)
+		return a.failStart(apperr.CodeAudioBackendUnavailable, "create audio source", audio.ErrUnavailable)
 	}
 	a.logDebug("audio source start", "session", session)
 	if err := src.Start(ctx); err != nil {
+		firstErr := err
 		a.clearSource(src)
 		if retryErr := a.recreateSource(ctx); retryErr != nil {
-			err = fmt.Errorf("restart capture after %v: %w", err, retryErr)
-			a.recordError(api.StateIdle, "pipewire_unavailable", err)
-			return withCode("pipewire_unavailable", err)
+			err = fmt.Errorf("restart capture after %v: %w", firstErr, retryErr)
+			return a.failStart(apperr.CodeAudioStartFailed, "start audio capture", err)
 		}
 		a.mu.Lock()
 		src = a.source
@@ -284,8 +304,7 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 		}
 		if err != nil {
 			a.clearSource(src)
-			a.recordError(api.StateIdle, "pipewire_unavailable", err)
-			return withCode("pipewire_unavailable", err)
+			return a.failStart(apperr.CodeAudioStartFailed, "start audio capture", err)
 		}
 	}
 	sessionCtx, cancel := context.WithCancel(a.rootCtx)
@@ -299,9 +318,9 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	a.status.State = api.StateListening
 	a.status.Audio.Capturing = true
 	a.status.ASR.Loaded = a.engine != nil && a.engine.Loaded()
-	if deferredMode(mode) {
+	if deferredMode(opts.Mode) {
 		a.deferred[session] = &deferredSession{
-			mode:      mode,
+			mode:      opts.Mode,
 			caseState: inject.CaseState{AtBoundary: true},
 		}
 	}
@@ -313,6 +332,15 @@ func (a *App) Start(ctx context.Context, mode api.Mode) error {
 	}()
 	go a.autoStopLoop(sessionCtx)
 	return nil
+}
+
+func (a *App) failStart(code, operation string, err error) error {
+	err = normalizeError(code, operation, err)
+	if a.guard != nil {
+		a.guard.Reset()
+	}
+	a.recordError(api.StateIdle, apperr.Code(err), err)
+	return err
 }
 
 func (a *App) Stop(ctx context.Context, commit bool) error {
@@ -359,8 +387,12 @@ func (a *App) stop(ctx context.Context, commit bool, expectedMode *api.Mode) err
 	if src != nil && wasCapturing {
 		a.logDebug("audio source pause", "session", session)
 		if err := src.Pause(ctx); err != nil {
-			a.recordError(api.StateIdle, "pipewire_unavailable", err)
-			return withCode("pipewire_unavailable", err)
+			err = normalizeError(apperr.CodeAudioStartFailed, "pause audio capture", err)
+			if a.guard != nil {
+				a.guard.Reset()
+			}
+			a.recordError(api.StateIdle, apperr.Code(err), err)
+			return err
 		}
 	}
 	// Wait for captureLoop to finish before flushing: the segmenter is not safe
@@ -382,6 +414,7 @@ func (a *App) stop(ctx context.Context, commit bool, expectedMode *api.Mode) err
 	}
 	a.mu.Lock()
 	finalize := false
+	resetFocus := !commit
 	if commit {
 		if deferred := a.deferred[session]; deferred != nil {
 			deferred.commitRequested = true
@@ -389,6 +422,7 @@ func (a *App) stop(ctx context.Context, commit bool, expectedMode *api.Mode) err
 		} else if a.pendingSession[session] == 0 {
 			a.status.State = api.StateIdle
 			a.status.Mode = nil
+			resetFocus = true
 		} else {
 			a.status.State = api.StateRecognizing
 		}
@@ -404,6 +438,9 @@ func (a *App) stop(ctx context.Context, commit bool, expectedMode *api.Mode) err
 		a.status.Mode = nil
 	}
 	a.mu.Unlock()
+	if resetFocus && a.guard != nil {
+		a.guard.Reset()
+	}
 	if finalize {
 		go a.finalizeDeferred(session)
 	}
@@ -480,8 +517,8 @@ func reloadRequiresRestart(old, next config.Config) error {
 	if oldInjection != nextInjection {
 		return fmt.Errorf("injection engine changes require restart")
 	}
-	if old.Sway != next.Sway {
-		return fmt.Errorf("Sway changes require restart")
+	if old.Focus != next.Focus {
+		return fmt.Errorf("focus changes require restart")
 	}
 	return nil
 }
@@ -615,9 +652,15 @@ func (a *App) Status(ctx context.Context) api.Status {
 	st.UptimeSeconds = time.Since(a.startedAt).Seconds()
 	if a.source != nil {
 		src := a.source.Stats()
+		if src.Backend != "" {
+			st.Audio.Backend = src.Backend
+		}
 		st.Audio.LevelDBFS = src.LevelDBFS
 		st.Audio.Overruns = src.Overruns
 		st.Audio.Capturing = src.Capturing
+		st.Audio.DeviceID = src.DeviceID
+		st.Audio.DeviceName = src.DeviceName
+		st.Audio.InputLatency = src.InputLatency
 		if src.SampleRate != 0 {
 			st.Audio.SampleRate = src.SampleRate
 		}
@@ -639,15 +682,13 @@ func (a *App) Status(ctx context.Context) api.Status {
 	}
 	if a.focus != nil {
 		fctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-		defer cancel()
-		if f, err := a.focus.Focused(fctx); err == nil {
-			st.Focus.Sway = true
-			st.Focus.FocusedID = f.ID
-			st.Focus.FocusedName = f.Name
-			st.Focus.AppID = f.AppID
-			st.Focus.Class = f.Class
-			st.Focus.Workspace = f.Workspace
-			st.Focus.Output = f.Output
+		target, err := a.focus.Current(fctx)
+		cancel()
+		if err == nil {
+			st.Focus = statusForTarget(a.focus, target)
+			a.focus.Release(target)
+		} else {
+			st.Focus.Available = false
 		}
 	}
 	return st
@@ -666,9 +707,8 @@ func (a *App) captureLoop(ctx context.Context) {
 	}()
 	var prevOverruns uint64
 	for {
-		// pipewire Read returns (0, nil) on a paused source, so the loop must
-		// check cancellation itself; otherwise it spins forever after Stop and
-		// a later Start races a second captureLoop on the shared segmenter.
+		// A paused source may return no frames, so cancellation must be checked
+		// before every read to prevent a stale loop racing the segmenter.
 		select {
 		case <-ctx.Done():
 			reason = "context_done"
@@ -687,7 +727,7 @@ func (a *App) captureLoop(ctx context.Context) {
 		}
 		if src == nil {
 			reason = "source_nil"
-			a.recordError(api.StateIdle, "pipewire_unavailable", audio.ErrUnavailable)
+			a.recordError(api.StateIdle, apperr.CodeAudioBackendUnavailable, audio.ErrUnavailable)
 			return
 		}
 		n, err := src.Read(ctx, buf)
@@ -700,7 +740,8 @@ func (a *App) captureLoop(ctx context.Context) {
 				}
 				reason = "read_error"
 				a.logWarn("audio read failed", "error", err)
-				a.recordError(api.StateIdle, classify(err), err)
+				err = normalizeError(apperr.CodeAudioDeviceDisconnected, "read audio capture", err)
+				a.recordError(api.StateIdle, apperr.Code(err), err)
 				a.scheduleAudioRetry()
 			}
 			if ctx.Err() != nil {
@@ -816,17 +857,26 @@ func (a *App) recreateSource(ctx context.Context) error {
 	src, err := a.sourceFactory()
 	if err != nil {
 		a.logWarn("audio source recreate failed", "error", err)
-		return err
+		return normalizeError(apperr.CodeAudioBackendUnavailable, "create audio source", err)
 	}
-	sampleRate := src.Stats().SampleRate
+	if src == nil {
+		return audio.ErrUnavailable
+	}
+	stats := src.Stats()
 	a.mu.Lock()
 	old := a.source
 	a.source = src
 	a.status.Audio.Capturing = false
-	a.status.Audio.SampleRate = sampleRate
+	if stats.Backend != "" {
+		a.status.Audio.Backend = stats.Backend
+	}
+	a.status.Audio.SampleRate = stats.SampleRate
+	a.status.Audio.DeviceID = stats.DeviceID
+	a.status.Audio.DeviceName = stats.DeviceName
+	a.status.Audio.InputLatency = stats.InputLatency
 	a.mu.Unlock()
 	closeSource(old)
-	a.logDebug("audio source recreated", "sample_rate", sampleRate)
+	a.logDebug("audio source recreated", "backend", stats.Backend, "sample_rate", stats.SampleRate)
 	return nil
 }
 
@@ -964,22 +1014,19 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 		a.setState(a.nextState())
 		return
 	}
-	var focusWarning *swayipc.FocusChange
-	if a.guard != nil && a.cfg.Sway.FocusCheck {
-		var err error
-		focusWarning, err = a.guard.CheckWithWarning(ctx)
-		if err != nil {
-			a.logWarn("focus guard cancelled injection", "session", job.session, "segment_id", seg.ID, "error", err)
-			a.recordCanceledTranscript(text, err)
-			a.setState(a.nextState())
-			return
-		}
-	}
+	var focusWarning *focus.Change
 	if a.injector != nil {
 		a.setState(api.StateTyping)
 		a.logDebug("typing transcript", "session", job.session, "segment_id", seg.ID, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs)
-		if err := a.injector.TypeText(ctx, text); err != nil {
-			a.recordUninjected(text, err)
+		var err error
+		focusWarning, err = a.injectText(ctx, text)
+		if err != nil {
+			if isFocusError(err) {
+				a.logWarn("focus guard cancelled injection", "session", job.session, "segment_id", seg.ID, "error", err)
+				a.recordCanceledTranscript(text, err)
+			} else {
+				a.recordUninjected(text, err)
+			}
 			a.setState(a.nextState())
 			return
 		}
@@ -993,9 +1040,39 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	}
 	a.recordTranscript(text)
 	if focusWarning != nil {
-		a.recordWarning("focus_changed", focusWarning.Error())
+		a.recordWarning(apperr.CodeFocusChanged, focusWarning.Error())
 	}
 	a.finishModeAfterSegment(ctx)
+}
+
+func (a *App) injectText(ctx context.Context, text string) (*focus.Change, error) {
+	var target focus.Target
+	var warning *focus.Change
+	if a.guard != nil && a.cfg.Focus.Enabled {
+		var err error
+		target, warning, err = a.guard.ResolveForInjection(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer a.focus.Release(target)
+	}
+	request := inject.Request{
+		Text:     text,
+		Target:   inject.Target{Focus: target},
+		KeyDelay: time.Duration(a.cfg.Injection.KeyDelayMS) * time.Millisecond,
+	}
+	if a.cfg.Injection.TimeoutMS > 0 {
+		request.Deadline = time.Now().Add(time.Duration(a.cfg.Injection.TimeoutMS) * time.Millisecond)
+	}
+	if target.Token != 0 || target.DegradedReason != "" {
+		request.ValidateTarget = func(ctx context.Context, target focus.Target) error {
+			return focus.ValidateTarget(ctx, a.focus, target)
+		}
+	}
+	if err := a.injector.Inject(ctx, request); err != nil {
+		return warning, normalizeError(apperr.CodeInjectionFailed, "inject transcript", err)
+	}
+	return warning, nil
 }
 
 func (a *App) finishModeAfterSegment(ctx context.Context) {
@@ -1052,10 +1129,7 @@ func safeSegmentFilename(id string) string {
 }
 
 func recognitionErrorCode(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "recognition_timeout"
-	}
-	return "recognition_failed"
+	return apperr.CodeRecognitionFailed
 }
 
 func (a *App) nextState() api.State {
@@ -1141,7 +1215,11 @@ func (a *App) finishASRJob(session uint64) {
 			a.status.Mode = nil
 		}
 	}
+	resetFocus := session == a.currentSession && a.status.State == api.StateIdle
 	a.mu.Unlock()
+	if resetFocus && a.guard != nil {
+		a.guard.Reset()
+	}
 	if finalize {
 		go a.finalizeDeferred(session)
 	}
@@ -1149,17 +1227,19 @@ func (a *App) finishASRJob(session uint64) {
 
 func (a *App) setState(state api.State) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.status.State = state
 	if state == api.StateIdle {
 		a.status.Mode = nil
 		a.segmentOpen = false
 	}
+	a.mu.Unlock()
+	if state == api.StateIdle && a.guard != nil {
+		a.guard.Reset()
+	}
 }
 
 func (a *App) recordError(state api.State, code string, err error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.status.State = state
 	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
 	a.status.LastWarning = nil
@@ -1169,26 +1249,23 @@ func (a *App) recordError(state api.State, code string, err error) {
 		a.segmentOpen = false
 		a.status.Audio.Capturing = false
 	}
-	if a.logger != nil {
-		a.logger.Warn("state error recorded", "state", state, "code", code, "error", err)
+	logger := a.logger
+	a.mu.Unlock()
+	if (state == api.StateIdle || state == api.StateError) && a.guard != nil {
+		a.guard.Reset()
+	}
+	if logger != nil {
+		logger.Warn("state error recorded", "state", state, "code", code, "error", err)
 	}
 }
 
-func (a *App) recordFocus(f *swayipc.FocusedContainer) {
-	if f == nil {
+func (a *App) recordFocus(target *focus.Target) {
+	if target == nil {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.status.Focus = api.FocusStatus{
-		Sway:        true,
-		FocusedID:   f.ID,
-		FocusedName: f.Name,
-		AppID:       f.AppID,
-		Class:       f.Class,
-		Workspace:   f.Workspace,
-		Output:      f.Output,
-	}
+	a.status.Focus = statusForTarget(a.focus, *target)
 }
 
 func (a *App) recordTranscript(text string) {
@@ -1211,7 +1288,8 @@ func (a *App) recordTranscript(text string) {
 func (a *App) recordCanceledTranscript(text string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.status.LastError = &api.ErrorInfo{Code: "focus_changed", Message: err.Error()}
+	code := apperr.Code(err)
+	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
 	a.status.LastWarning = nil
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if !a.cfg.Daemon.RedactTranscriptsInLogs {
@@ -1220,14 +1298,15 @@ func (a *App) recordCanceledTranscript(text string, err error) {
 		a.status.LastUninjectedText = ""
 	}
 	if a.logger != nil {
-		a.logger.Warn("transcript cancelled", "code", "focus_changed", "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
+		a.logger.Warn("transcript cancelled", "code", code, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
 	}
 }
 
 func (a *App) recordUninjected(text string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.status.LastError = &api.ErrorInfo{Code: "wtype_failed", Message: err.Error()}
+	code := apperr.Code(err)
+	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
 	a.status.LastWarning = nil
 	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
 	if !a.cfg.Daemon.RedactTranscriptsInLogs {
@@ -1236,7 +1315,7 @@ func (a *App) recordUninjected(text string, err error) {
 		a.status.LastUninjectedText = ""
 	}
 	if a.logger != nil {
-		a.logger.Warn("transcript not injected", "code", "wtype_failed", "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
+		a.logger.Warn("transcript not injected", "code", code, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
 	}
 }
 
@@ -1303,49 +1382,69 @@ func boolArg(args map[string]any, name string) bool {
 	return v
 }
 
-type codedError struct {
-	code string
-	err  error
-}
-
-func (e codedError) Error() string {
-	return e.err.Error()
-}
-
-func (e codedError) Unwrap() error {
-	return e.err
-}
-
 func withCode(code string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return codedError{code: code, err: err}
+	return apperr.New(code, "app request", err)
 }
 
 func codeFor(err error) string {
-	var coded codedError
-	if errors.As(err, &coded) {
-		return coded.code
-	}
-	return classify(err)
+	return apperr.Code(err)
 }
 
-func classify(err error) string {
+func normalizeError(code, operation string, err error) error {
 	if err == nil {
+		return nil
+	}
+	if apperr.Code(err) != apperr.CodeInternalError {
+		return err
+	}
+	return apperr.New(code, operation, err)
+}
+
+func isFocusError(err error) bool {
+	switch apperr.Code(err) {
+	case apperr.CodeFocusUnavailable, apperr.CodeFocusChanged, apperr.CodeSecureField:
+		return true
+	default:
+		return false
+	}
+}
+
+func injectorBackend(injector inject.Injector, fallback string) string {
+	if injector != nil && injector.Backend() != "" {
+		return injector.Backend()
+	}
+	return fallback
+}
+
+func focusBackend(provider focus.Provider) string {
+	if provider == nil {
 		return ""
 	}
-	msg := err.Error()
-	switch {
-	case errors.Is(err, audio.ErrUnavailable):
-		return "pipewire_unavailable"
-	case strings.Contains(msg, "focus_changed"):
-		return "focus_changed"
-	case strings.Contains(msg, "wtype"):
-		return "wtype_failed"
-	case strings.Contains(msg, "SWAYSOCK"), strings.Contains(msg, "sway"):
-		return "sway_unavailable"
-	default:
-		return "runtime_error"
+	return provider.Backend()
+}
+
+func statusForTarget(provider focus.Provider, target focus.Target) api.FocusStatus {
+	status := api.FocusStatus{
+		Backend:        target.Backend,
+		Available:      true,
+		StableID:       target.StableID,
+		AppID:          target.AppID,
+		AppName:        target.AppName,
+		PID:            target.PID,
+		SecureField:    target.SecureField,
+		DegradedReason: target.DegradedReason,
+		Sway:           target.Backend == "sway",
 	}
+	if metadataProvider, ok := provider.(focus.MetadataProvider); ok {
+		metadata := metadataProvider.Metadata(target)
+		status.FocusedID = metadata.FocusedID
+		status.FocusedName = metadata.FocusedName
+		status.Class = metadata.Class
+		status.Workspace = metadata.Workspace
+		status.Output = metadata.Output
+	}
+	return status
 }

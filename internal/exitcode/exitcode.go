@@ -22,17 +22,17 @@ func ForErrorCode(code string) int {
 		return DaemonUnavailable
 	case "dependency_missing":
 		return DependencyMissing
-	case "model_invalid", "model_missing":
+	case "model_invalid", "model_missing", "asr_model_missing", "asr_model_invalid", "asr_backend_unavailable":
 		return ModelInvalid
-	case "pipewire_unavailable":
+	case "pipewire_unavailable", "audio_backend_unavailable", "audio_device_not_found", "audio_device_disconnected", "audio_start_failed":
 		return PipeWireUnavailable
-	case "sway_unavailable", "focus_changed":
+	case "sway_unavailable", "focus_unavailable", "focus_changed", "secure_field":
 		return SwayUnavailable
-	case "wtype_unavailable", "wtype_failed":
+	case "wtype_unavailable", "wtype_failed", "injector_unavailable", "injection_failed":
 		return WtypeUnavailable
 	case "recognition_timeout", "recognition_failed":
 		return RecognitionFailed
-	case "permission_denied", "socket_permission":
+	case "permission_denied", "socket_permission", "permission_microphone_denied", "permission_accessibility_denied", "permission_input_monitoring_denied":
 		return Permission
 	case "usage":
 		return Usage

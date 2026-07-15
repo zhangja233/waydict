@@ -20,6 +20,7 @@ type Config struct {
 	VAD         VAD         `toml:"vad"`
 	ASR         ASR         `toml:"asr"`
 	Injection   Injection   `toml:"injection"`
+	Focus       Focus       `toml:"focus"`
 	PostProcess PostProcess `toml:"postprocess"`
 	Sway        Sway        `toml:"sway"`
 	Debug       Debug       `toml:"debug"`
@@ -83,6 +84,13 @@ type Injection struct {
 	FocusPolicy string `toml:"focus_policy"`
 }
 
+type Focus struct {
+	Enabled  bool   `toml:"enabled"`
+	Backend  string `toml:"backend"`
+	Required bool   `toml:"required"`
+	Socket   string `toml:"socket"`
+}
+
 type PostProcess struct {
 	TrimLeading              bool `toml:"trim_leading"`
 	CollapseSpaces           bool `toml:"collapse_spaces"`
@@ -109,9 +117,11 @@ func Load(path string) (Config, error) {
 		path = DefaultPath()
 	}
 	if _, err := os.Stat(path); err == nil {
-		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		metadata, err := toml.DecodeFile(path, &cfg)
+		if err != nil {
 			return Config{}, err
 		}
+		cfg.applyLegacyFocus(metadata)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
 	}
@@ -120,6 +130,18 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c *Config) applyLegacyFocus(metadata toml.MetaData) {
+	if !metadata.IsDefined("focus", "enabled") {
+		c.Focus.Enabled = c.Sway.FocusCheck
+	}
+	if !metadata.IsDefined("focus", "required") {
+		c.Focus.Required = c.Sway.RequireSway
+	}
+	if !metadata.IsDefined("focus", "socket") {
+		c.Focus.Socket = c.Sway.Socket
+	}
 }
 
 func (c *Config) applyASRDefaults() {
@@ -141,6 +163,7 @@ func (c *Config) Expand() error {
 		&c.VAD.Model,
 		&c.ASR.ModelDir,
 		&c.ASR.WhisperModel,
+		&c.Focus.Socket,
 		&c.Sway.Socket,
 		&c.Debug.SaveAudioDir,
 	}

@@ -2,23 +2,22 @@ package app
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"waydict/internal/apperr"
 	"waydict/internal/asr"
 	"waydict/internal/audio"
 	"waydict/internal/config"
 	"waydict/internal/control"
+	"waydict/internal/focus"
 	"waydict/internal/inject"
-	"waydict/internal/swayipc"
 	"waydict/internal/vad"
 	"waydict/pkg/api"
 )
@@ -254,12 +253,12 @@ func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 		want string
 	}{
 		{
-			name: "wtype",
+			name: "injector",
 			deps: Dependencies{
 				Engine:   &FakeEngine{Text: "hello", IsLoaded: true},
 				Injector: &MemoryInjector{Err: errors.New("missing executable")},
 			},
-			want: "wtype_unavailable",
+			want: apperr.CodeInjectorUnavailable,
 		},
 		{
 			name: "model",
@@ -272,16 +271,16 @@ func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 				},
 				Injector: &MemoryInjector{},
 			},
-			want: "model_invalid",
+			want: apperr.CodeASRModelInvalid,
 		},
 		{
-			name: "pipewire",
+			name: "audio",
 			deps: Dependencies{
 				SourceFactory: func() (audio.Source, error) { return nil, errors.New("connect failed") },
 				Engine:        &FakeEngine{Text: "hello", IsLoaded: true},
 				Injector:      &MemoryInjector{},
 			},
-			want: "pipewire_unavailable",
+			want: apperr.CodeAudioBackendUnavailable,
 		},
 	}
 	for _, tc := range tests {
@@ -685,7 +684,7 @@ func TestCaseStateAdvancesAcrossSegments(t *testing.T) {
 func TestCaseStateDoesNotAdvanceOnInjectionFailure(t *testing.T) {
 	cfg := config.Defaults()
 	engine := &FakeEngine{Text: "First fragment", IsLoaded: true}
-	mem := &MemoryInjector{Err: errors.New("wtype failed")}
+	mem := &MemoryInjector{Err: errors.New("injection failed")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	app := New(ctx, cfg, Dependencies{Engine: engine, Injector: mem})
@@ -792,10 +791,7 @@ func TestDiscardedSessionCannotCommitCaseStateAfterRestart(t *testing.T) {
 }
 
 func TestFocusChangeCancelsInjection(t *testing.T) {
-	socket := startFakeSway(t,
-		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":10,"type":"con","name":"first","focused":true}]}]}]}`,
-		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":11,"type":"con","name":"second","focused":true}]}]}]}`,
-	)
+	provider := &appFocusProvider{sameIDs: []string{"two"}}
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
 	cfg.VAD.Engine = "energy"
@@ -827,7 +823,7 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
 		Engine:    &FakeEngine{Text: "secret"},
 		Injector:  mem,
-		Focus:     swayipc.New(socket),
+		Focus:     provider,
 	})
 	if err := app.Start(ctx, api.ModeOneshot); err != nil {
 		t.Fatal(err)
@@ -852,11 +848,22 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 	t.Fatalf("focus change was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
 }
 
+func TestStartWithOptionsRejectsExpectedFocusPIDMismatch(t *testing.T) {
+	cfg := config.Defaults()
+	provider := &appFocusProvider{currentPID: 42}
+	app := New(context.Background(), cfg, Dependencies{Focus: provider})
+	err := app.StartWithOptions(context.Background(), StartOptions{
+		Mode:             api.ModeOneshot,
+		Origin:           StartOriginMenu,
+		ExpectedFocusPID: 7,
+	})
+	if got := apperr.Code(err); got != apperr.CodeFocusChanged {
+		t.Fatalf("code = %q, want %q (%v)", got, apperr.CodeFocusChanged, err)
+	}
+}
+
 func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
-	socket := startFakeSway(t,
-		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":10,"type":"con","name":"first","focused":true}]}]}]}`,
-		`{"id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"out","nodes":[{"id":3,"type":"workspace","name":"1","nodes":[{"id":11,"type":"con","name":"second","focused":true}]}]}]}`,
-	)
+	provider := &appFocusProvider{sameIDs: []string{"two", "two"}}
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
 	cfg.Injection.FocusPolicy = "warn_and_type"
@@ -889,7 +896,7 @@ func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
 		Segmenter: vad.NewEnergySegmenter(cfg.VAD, cfg.Audio.SampleRate),
 		Engine:    &FakeEngine{Text: "secret"},
 		Injector:  mem,
-		Focus:     swayipc.New(socket),
+		Focus:     provider,
 	})
 	if err := app.Start(ctx, api.ModeOneshot); err != nil {
 		t.Fatal(err)
@@ -911,7 +918,7 @@ func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
 	t.Fatalf("focus warning was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
 }
 
-func TestWtypeFailureRetentionFollowsRedaction(t *testing.T) {
+func TestInjectionFailureRetentionFollowsRedaction(t *testing.T) {
 	tests := []struct {
 		name       string
 		redact     bool
@@ -929,15 +936,15 @@ func TestWtypeFailureRetentionFollowsRedaction(t *testing.T) {
 			defer cancel()
 			app := New(ctx, cfg, Dependencies{
 				Engine:   &FakeEngine{Text: "secret", IsLoaded: true},
-				Injector: &MemoryInjector{Err: errors.New("wtype failed")},
+				Injector: &MemoryInjector{Err: errors.New("injection failed")},
 			})
 			app.queueSegment(asr.AudioSegment{ID: "seg", Duration: time.Second})
 			deadline := time.Now().Add(time.Second)
 			for time.Now().Before(deadline) {
 				st := app.Status(ctx)
 				if st.LastError != nil {
-					if st.LastError.Code != "wtype_failed" {
-						t.Fatalf("error code = %s, want wtype_failed", st.LastError.Code)
+					if st.LastError.Code != apperr.CodeInjectionFailed {
+						t.Fatalf("error code = %s, want %s", st.LastError.Code, apperr.CodeInjectionFailed)
 					}
 					if st.LastUninjectedText != tc.wantStored {
 						t.Fatalf("last uninjected text = %q, want %q", st.LastUninjectedText, tc.wantStored)
@@ -946,7 +953,7 @@ func TestWtypeFailureRetentionFollowsRedaction(t *testing.T) {
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			t.Fatalf("wtype failure was not recorded: %+v", app.Status(ctx))
+			t.Fatalf("injection failure was not recorded: %+v", app.Status(ctx))
 		})
 	}
 }
@@ -1018,7 +1025,7 @@ func TestCaptureErrorResetsSegmenter(t *testing.T) {
 		t.Fatal("segmenter was not reset after capture error")
 	}
 	st := app.Status(ctx)
-	if st.LastError == nil || st.LastError.Code != "pipewire_unavailable" {
+	if st.LastError == nil || st.LastError.Code != apperr.CodeAudioBackendUnavailable {
 		t.Fatalf("unexpected status after capture error: %+v", st.LastError)
 	}
 }
@@ -1072,8 +1079,8 @@ func TestASRDeadlineRecordsTimeout(t *testing.T) {
 	for time.Now().Before(deadline) {
 		st := app.Status(ctx)
 		if st.LastError != nil {
-			if st.LastError.Code != "recognition_timeout" {
-				t.Fatalf("error code = %s, want recognition_timeout", st.LastError.Code)
+			if st.LastError.Code != apperr.CodeRecognitionFailed {
+				t.Fatalf("error code = %s, want %s", st.LastError.Code, apperr.CodeRecognitionFailed)
 			}
 			return
 		}
@@ -1294,14 +1301,14 @@ type blockingMemoryInjector struct {
 	release <-chan struct{}
 }
 
-func (m *blockingMemoryInjector) TypeText(ctx context.Context, text string) error {
+func (m *blockingMemoryInjector) Inject(ctx context.Context, request inject.Request) error {
 	select {
 	case m.started <- struct{}{}:
 	default:
 	}
 	select {
 	case <-m.release:
-		return m.MemoryInjector.TypeText(ctx, text)
+		return m.MemoryInjector.Inject(ctx, request)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -1355,70 +1362,34 @@ func (s *overrunSource) Stats() audio.Stats {
 	return audio.Stats{SampleRate: s.sampleRate, Capturing: s.capturing, Overruns: overruns}
 }
 
-func startFakeSway(t *testing.T, trees ...string) string {
-	t.Helper()
-	socket := filepath.Join(t.TempDir(), "sway.sock")
-	ln, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = ln.Close()
-		_ = os.Remove(socket)
-	})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; ; i++ {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			tree := trees[len(trees)-1]
-			if i < len(trees) {
-				tree = trees[i]
-			}
-			serveSwayTree(t, conn, []byte(tree))
-		}
-	}()
-	t.Cleanup(func() {
-		_ = ln.Close()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("fake sway server did not stop")
-		}
-	})
-	return socket
+type appFocusProvider struct {
+	mu         sync.Mutex
+	next       uint64
+	currentPID int
+	sameIDs    []string
 }
 
-func serveSwayTree(t *testing.T, conn net.Conn, payload []byte) {
-	t.Helper()
-	defer conn.Close()
-	header := make([]byte, 14)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		t.Errorf("read header: %v", err)
-		return
+func (*appFocusProvider) Backend() string                 { return "test" }
+func (*appFocusProvider) Available(context.Context) error { return nil }
+func (p *appFocusProvider) Release(focus.Target)          {}
+func (p *appFocusProvider) Current(context.Context) (focus.Target, error) {
+	return p.target("one"), nil
+}
+func (p *appFocusProvider) Same(_ context.Context, target focus.Target) (focus.Target, bool, error) {
+	p.mu.Lock()
+	id := target.StableID
+	if len(p.sameIDs) > 0 {
+		id = p.sameIDs[0]
+		p.sameIDs = p.sameIDs[1:]
 	}
-	if string(header[:6]) != "i3-ipc" {
-		t.Errorf("bad magic %q", header[:6])
-		return
-	}
-	length := binary.LittleEndian.Uint32(header[6:10])
-	if length > 0 {
-		body := make([]byte, length)
-		if _, err := io.ReadFull(conn, body); err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-	}
-	typ := binary.LittleEndian.Uint32(header[10:14])
-	resp := make([]byte, 14+len(payload))
-	copy(resp[:6], "i3-ipc")
-	binary.LittleEndian.PutUint32(resp[6:10], uint32(len(payload)))
-	binary.LittleEndian.PutUint32(resp[10:14], typ)
-	copy(resp[14:], payload)
-	if _, err := conn.Write(resp); err != nil {
-		t.Errorf("write response: %v", err)
-	}
+	p.mu.Unlock()
+	current := p.target(id)
+	return current, current.StableID == target.StableID, nil
+}
+func (p *appFocusProvider) target(id string) focus.Target {
+	p.mu.Lock()
+	p.next++
+	token := p.next
+	p.mu.Unlock()
+	return focus.Target{Backend: "test", StableID: id, PID: p.currentPID, Token: token}
 }

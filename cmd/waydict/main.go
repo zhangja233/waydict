@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"waydict/internal/app"
+	"waydict/internal/apperr"
 	"waydict/internal/asr"
 	sherpaasr "waydict/internal/asr/sherpa"
 	"waydict/internal/audio"
@@ -26,6 +27,8 @@ import (
 	"waydict/internal/config"
 	"waydict/internal/control"
 	"waydict/internal/exitcode"
+	"waydict/internal/focus"
+	swayfocus "waydict/internal/focus/sway"
 	"waydict/internal/inject"
 	"waydict/internal/model"
 	"waydict/internal/modelinstall"
@@ -208,6 +211,7 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return exitForErr(err)
 		}
+		defer prepared.Reset()
 	}
 	tr, code := transcribeFileFunc(context.Background(), cfg, *file, stderr)
 	if code != exitcode.Success {
@@ -268,9 +272,11 @@ func transcribeFile(ctx context.Context, cfg config.Config, file string, stderr 
 }
 
 type focusGuard interface {
-	CaptureStart(context.Context) error
-	Check(context.Context) error
-	CheckWithWarning(context.Context) (*swayipc.FocusChange, error)
+	CaptureStart(context.Context, int) error
+	ResolveForInjection(context.Context) (focus.Target, *focus.Change, error)
+	Release(focus.Target)
+	Validate(context.Context, focus.Target) error
+	Reset()
 }
 
 type preparedInjection struct {
@@ -283,7 +289,11 @@ var (
 	transcribeFileFunc = transcribeFile
 	newInjector        = func(cfg config.Injection) inject.Injector { return inject.NewWtype(cfg) }
 	newFocusGuard      = func(cfg config.Config) focusGuard {
-		return swayipc.NewGuard(swayipc.New(cfg.Sway.Socket), cfg.Injection.FocusPolicy)
+		provider := swayfocus.New(swayipc.New(cfg.Focus.Socket))
+		return &focusGuardAdapter{
+			guard:    focus.NewGuard(provider, focus.Policy(cfg.Injection.FocusPolicy)),
+			provider: provider,
+		}
 	}
 	readAudioFileFunc     = audio.ReadFile
 	newASREngine          = func(cfg config.ASR) asr.Engine { return sherpaasr.New(cfg) }
@@ -406,12 +416,12 @@ func confirmResolvedBackend(engine asr.Engine, resolution asr.Resolution, stderr
 func prepareInjection(ctx context.Context, cfg config.Config, stderr io.Writer) (*preparedInjection, error) {
 	w := newInjector(cfg.Injection)
 	if err := w.Available(ctx); err != nil {
-		return nil, fmt.Errorf("wtype unavailable: %w", err)
+		return nil, err
 	}
 	prepared := &preparedInjection{injector: w, stderr: stderr}
-	if cfg.Sway.FocusCheck {
+	if cfg.Focus.Enabled {
 		guard := newFocusGuard(cfg)
-		if err := guard.CaptureStart(ctx); err != nil {
+		if err := guard.CaptureStart(ctx, 0); err != nil {
 			return nil, err
 		}
 		prepared.guard = guard
@@ -420,16 +430,54 @@ func prepareInjection(ctx context.Context, cfg config.Config, stderr io.Writer) 
 }
 
 func (p *preparedInjection) TypeText(ctx context.Context, text string) error {
+	request := inject.Request{Text: text}
 	if p.guard != nil {
-		warning, err := p.guard.CheckWithWarning(ctx)
+		target, warning, err := p.guard.ResolveForInjection(ctx)
 		if err != nil {
 			return err
 		}
+		defer p.guard.Release(target)
+		request.Target.Focus = target
+		request.ValidateTarget = p.guard.Validate
 		if warning != nil && p.stderr != nil {
 			fmt.Fprintf(p.stderr, "warning: %s\n", warning.Error())
 		}
 	}
-	return p.injector.TypeText(ctx, text)
+	if err := p.injector.Inject(ctx, request); err != nil {
+		return normalizeCLIError(apperr.CodeInjectionFailed, "inject text", err)
+	}
+	return nil
+}
+
+func (p *preparedInjection) Reset() {
+	if p != nil && p.guard != nil {
+		p.guard.Reset()
+	}
+}
+
+type focusGuardAdapter struct {
+	guard    *focus.Guard
+	provider focus.Provider
+}
+
+func (g *focusGuardAdapter) CaptureStart(ctx context.Context, expectedPID int) error {
+	return g.guard.CaptureStart(ctx, expectedPID)
+}
+
+func (g *focusGuardAdapter) ResolveForInjection(ctx context.Context) (focus.Target, *focus.Change, error) {
+	return g.guard.ResolveForInjection(ctx)
+}
+
+func (g *focusGuardAdapter) Release(target focus.Target) {
+	g.provider.Release(target)
+}
+
+func (g *focusGuardAdapter) Validate(ctx context.Context, target focus.Target) error {
+	return focus.ValidateTarget(ctx, g.provider, target)
+}
+
+func (g *focusGuardAdapter) Reset() {
+	g.guard.Reset()
 }
 
 var (
@@ -845,19 +893,27 @@ func featureEnabled(enabled bool, message string) error {
 }
 
 func exitForErr(err error) int {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "model"):
+	switch apperr.Code(err) {
+	case apperr.CodeASRModelMissing, apperr.CodeASRModelInvalid, apperr.CodeASRBackendUnavailable:
 		return exitcode.ModelInvalid
-	case strings.Contains(msg, "pipewire"):
+	case apperr.CodeAudioBackendUnavailable, apperr.CodeAudioDeviceNotFound, apperr.CodeAudioDeviceDisconnected, apperr.CodeAudioStartFailed:
 		return exitcode.PipeWireUnavailable
-	case strings.Contains(msg, "sway"), strings.Contains(msg, "SWAYSOCK"), strings.Contains(msg, "focus"):
+	case apperr.CodeFocusUnavailable, apperr.CodeFocusChanged, apperr.CodeSecureField:
 		return exitcode.SwayUnavailable
-	case strings.Contains(msg, "wtype"):
+	case apperr.CodeInjectorUnavailable, apperr.CodeInjectionFailed:
 		return exitcode.WtypeUnavailable
+	case apperr.CodePermissionMicrophoneDenied, apperr.CodePermissionAccessibilityDenied, apperr.CodePermissionInputMonitoringDenied:
+		return exitcode.Permission
 	default:
 		return exitcode.Generic
 	}
+}
+
+func normalizeCLIError(code, operation string, err error) error {
+	if err == nil || apperr.Code(err) != apperr.CodeInternalError {
+		return err
+	}
+	return apperr.New(code, operation, err)
 }
 
 func peakRSS() uint64 {

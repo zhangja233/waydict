@@ -87,8 +87,8 @@ func (s *continuousSource) Stats() audio.Stats {
 func TestConcurrentStartStopNoSegmenterRace(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Daemon.AutoStopAfterSilenceSeconds = 0
-	cfg.Sway.RequireSway = false
-	cfg.Sway.FocusCheck = false
+	cfg.Focus.Required = false
+	cfg.Focus.Enabled = false
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

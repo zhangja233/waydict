@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"waydict/internal/apperr"
 	"waydict/internal/audio"
 	"waydict/internal/config"
 )
@@ -36,28 +37,28 @@ func New(cfg config.Audio) (*Capture, error) {
 	}
 	var out *C.sv_pw_capture
 	if rc := C.sv_pw_capture_new(&c, &out); rc != 0 {
-		return nil, fmt.Errorf("pipewire capture init failed: %d", int(rc))
+		return nil, apperr.New(apperr.CodeAudioBackendUnavailable, "initialize PipeWire capture", fmt.Errorf("native error %d", int(rc)))
 	}
 	return &Capture{ptr: out, cfg: cfg}, nil
 }
 
 func (c *Capture) Start(context.Context) error {
 	if rc := C.sv_pw_capture_start(c.ptr, 2000); rc != 0 {
-		return fmt.Errorf("pipewire capture start failed: %d", int(rc))
+		return apperr.New(apperr.CodeAudioStartFailed, "start PipeWire capture", fmt.Errorf("native error %d", int(rc)))
 	}
 	return nil
 }
 
 func (c *Capture) Pause(context.Context) error {
 	if rc := C.sv_pw_capture_pause(c.ptr); rc != 0 {
-		return fmt.Errorf("pipewire capture pause failed: %d", int(rc))
+		return apperr.New(apperr.CodeAudioStartFailed, "pause PipeWire capture", fmt.Errorf("native error %d", int(rc)))
 	}
 	return nil
 }
 
 func (c *Capture) Stop(context.Context) error {
 	if rc := C.sv_pw_capture_stop(c.ptr); rc != 0 {
-		return fmt.Errorf("pipewire capture stop failed: %d", int(rc))
+		return apperr.New(apperr.CodeAudioStartFailed, "stop PipeWire capture", fmt.Errorf("native error %d", int(rc)))
 	}
 	return nil
 }
@@ -83,7 +84,7 @@ func (c *Capture) Read(ctx context.Context, dst []float32) (int, error) {
 			return 0, ctx.Err()
 		default:
 		}
-		return 0, fmt.Errorf("pipewire capture read failed: %d", int(n))
+		return 0, apperr.New(apperr.CodeAudioDeviceDisconnected, "read PipeWire capture", fmt.Errorf("native error %d", int(n)))
 	}
 	return int(n), nil
 }
@@ -92,10 +93,13 @@ func (c *Capture) Stats() audio.Stats {
 	var st C.sv_pw_stats
 	C.sv_pw_capture_stats(c.ptr, &st)
 	return audio.Stats{
-		SampleRate: int(st.sample_rate),
-		LevelDBFS:  float64(st.level_dbfs),
-		Overruns:   uint64(st.overruns),
-		Capturing:  st.capturing != 0,
+		Backend:      "pipewire",
+		SampleRate:   int(st.sample_rate),
+		LevelDBFS:    float64(st.level_dbfs),
+		Overruns:     uint64(st.overruns),
+		Capturing:    st.capturing != 0,
+		DeviceID:     c.cfg.TargetObject,
+		InputLatency: time.Duration(c.cfg.QuantumMS) * time.Millisecond,
 	}
 }
 

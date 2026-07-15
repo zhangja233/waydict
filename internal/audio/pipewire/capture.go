@@ -4,6 +4,7 @@ package pipewire
 
 import (
 	"context"
+	"time"
 
 	"waydict/internal/audio"
 	"waydict/internal/config"
@@ -34,7 +35,14 @@ func (c *Capture) Read(context.Context, []float32) (int, error) {
 }
 
 func (c *Capture) Stats() audio.Stats {
-	return audio.Stats{SampleRate: c.cfg.SampleRate, LevelDBFS: -120, Capturing: false}
+	return audio.Stats{
+		Backend:      "pipewire",
+		SampleRate:   c.cfg.SampleRate,
+		LevelDBFS:    -120,
+		Capturing:    false,
+		DeviceID:     c.cfg.TargetObject,
+		InputLatency: time.Duration(c.cfg.QuantumMS) * time.Millisecond,
+	}
 }
 
 func Check() error {

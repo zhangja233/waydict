@@ -14,15 +14,16 @@ import (
 	"testing"
 	"time"
 
+	"waydict/internal/apperr"
 	"waydict/internal/asr"
 	"waydict/internal/audio"
 	"waydict/internal/config"
 	"waydict/internal/control"
 	"waydict/internal/exitcode"
+	"waydict/internal/focus"
 	"waydict/internal/inject"
 	"waydict/internal/model"
 	"waydict/internal/modelinstall"
-	"waydict/internal/swayipc"
 	"waydict/pkg/api"
 )
 
@@ -30,6 +31,16 @@ func TestRunUsage(t *testing.T) {
 	var out, err bytes.Buffer
 	if got := run(nil, &out, &err); got != exitcode.Usage {
 		t.Fatalf("exit = %d, want %d", got, exitcode.Usage)
+	}
+}
+
+func TestExitForErrUsesTypedCodes(t *testing.T) {
+	if got := exitForErr(errors.New("audio backend unavailable")); got != exitcode.Generic {
+		t.Fatalf("unknown error exit = %d", got)
+	}
+	err := apperr.New(apperr.CodeAudioBackendUnavailable, "start audio", errors.New("unavailable"))
+	if got := exitForErr(err); got != exitcode.PipeWireUnavailable {
+		t.Fatalf("typed error exit = %d", got)
 	}
 }
 
@@ -103,7 +114,7 @@ func TestTranscribeInjectCapturesFocusBeforeDecode(t *testing.T) {
 func TestTranscribeInjectFocusChangePreventsType(t *testing.T) {
 	restore := replaceTranscribeDeps(t)
 	defer restore()
-	guard := &fakeFocusGuard{checkErr: fmt.Errorf("focus_changed: focus changed from 1 to 2")}
+	guard := &fakeFocusGuard{checkErr: apperr.New(apperr.CodeFocusChanged, "compare focus", errors.New("focus changed from 1 to 2"))}
 	typed := false
 	newFocusGuard = func(config.Config) focusGuard { return guard }
 	newInjector = func(config.Injection) inject.Injector {
@@ -128,9 +139,9 @@ func TestTranscribeInjectWarnAndTypeReportsWarning(t *testing.T) {
 	restore := replaceTranscribeDeps(t)
 	defer restore()
 	guard := &fakeFocusGuard{
-		warning: &swayipc.FocusChange{
-			From: swayipc.FocusedContainer{ID: 1},
-			To:   swayipc.FocusedContainer{ID: 2},
+		warning: &focus.Change{
+			From: focus.Target{StableID: "1"},
+			To:   focus.Target{StableID: "2"},
 		},
 	}
 	typed := ""
@@ -151,7 +162,7 @@ func TestTranscribeInjectWarnAndTypeReportsWarning(t *testing.T) {
 	if typed != "hello " {
 		t.Fatalf("typed = %q", typed)
 	}
-	if got := err.String(); !strings.Contains(got, "warning: focus_changed: focus changed from 1 to 2") {
+	if got := err.String(); !strings.Contains(got, "warning: focus changed from 1 to 2") {
 		t.Fatalf("stderr = %q", got)
 	}
 }
@@ -539,37 +550,43 @@ type fakeFocusGuard struct {
 	captured bool
 	checked  bool
 	checkErr error
-	warning  *swayipc.FocusChange
+	warning  *focus.Change
 }
 
-func (f *fakeFocusGuard) CaptureStart(context.Context) error {
+func (f *fakeFocusGuard) CaptureStart(context.Context, int) error {
 	f.captured = true
 	return nil
 }
 
-func (f *fakeFocusGuard) Check(ctx context.Context) error {
-	_, err := f.CheckWithWarning(ctx)
-	return err
+func (f *fakeFocusGuard) ResolveForInjection(context.Context) (focus.Target, *focus.Change, error) {
+	f.checked = true
+	return focus.Target{}, f.warning, f.checkErr
 }
 
-func (f *fakeFocusGuard) CheckWithWarning(context.Context) (*swayipc.FocusChange, error) {
-	f.checked = true
-	return f.warning, f.checkErr
-}
+func (f *fakeFocusGuard) Release(focus.Target)                         {}
+func (f *fakeFocusGuard) Validate(context.Context, focus.Target) error { return nil }
+func (f *fakeFocusGuard) Reset()                                       {}
 
 type fakeInjector struct {
 	typeText func(context.Context, string) error
 }
 
+func (f fakeInjector) Backend() string { return "fake" }
+
 func (f fakeInjector) Available(context.Context) error {
 	return nil
 }
 
-func (f fakeInjector) TypeText(ctx context.Context, text string) error {
+func (f fakeInjector) Inject(ctx context.Context, request inject.Request) error {
+	if request.ValidateTarget != nil {
+		if err := request.ValidateTarget(ctx, request.Target.Focus); err != nil {
+			return err
+		}
+	}
 	if f.typeText == nil {
 		return nil
 	}
-	return f.typeText(ctx, text)
+	return f.typeText(ctx, request.Text)
 }
 
 type fakeEngine struct {

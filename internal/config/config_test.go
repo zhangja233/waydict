@@ -198,6 +198,53 @@ func TestExpandPathRejectsUnknownVariable(t *testing.T) {
 	}
 }
 
+func TestLoadMapsLegacyFocusFieldsUnlessGenericFieldsAreExplicit(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		want     Focus
+	}{
+		{
+			name: "legacy",
+			contents: `[sway]
+require_sway = false
+focus_check = false
+socket = "/tmp/legacy.sock"
+`,
+			want: Focus{Enabled: false, Backend: "sway", Required: false, Socket: "/tmp/legacy.sock"},
+		},
+		{
+			name: "generic override",
+			contents: `[sway]
+require_sway = false
+focus_check = false
+socket = "/tmp/legacy.sock"
+
+[focus]
+enabled = true
+required = true
+socket = "/tmp/generic.sock"
+`,
+			want: Focus{Enabled: true, Backend: "sway", Required: true, Socket: "/tmp/generic.sock"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Focus != tt.want {
+				t.Fatalf("focus = %#v, want %#v", cfg.Focus, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateASRDoesNotRequireDaemonRuntimeSettings(t *testing.T) {
 	cfg := Defaults()
 	cfg.ASR.NumThreads = 1

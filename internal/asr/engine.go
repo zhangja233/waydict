@@ -13,6 +13,12 @@ type Engine interface {
 	Loaded() bool
 }
 
+type Accelerator struct {
+	Provider string
+	Device   int
+	Name     string
+}
+
 type AudioSegment struct {
 	ID             string
 	Samples        []float32
