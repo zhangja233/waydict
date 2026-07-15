@@ -12,13 +12,12 @@ import (
 )
 
 func init() {
-	newWhisperEngineHook = func(modelPath string, device, threads int, useGPU bool, initialPrompt string) (asr.Engine, error) {
+	newWhisperEngineHook = func(modelPath string, device, threads int, useGPU bool) (asr.Engine, error) {
 		return whispercpp.New(whispercpp.Config{
-			ModelPath:     modelPath,
-			Device:        device,
-			NumThreads:    threads,
-			UseGPU:        useGPU,
-			InitialPrompt: initialPrompt,
+			ModelPath:  modelPath,
+			Device:     device,
+			NumThreads: threads,
+			UseGPU:     useGPU,
 		})
 	}
 	probeGPUHook = probeVulkanGPU

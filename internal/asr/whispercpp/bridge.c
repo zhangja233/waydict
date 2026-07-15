@@ -21,7 +21,7 @@ struct whisper_context *waydict_whisper_init(const char *model_path, bool use_gp
     return whisper_init_from_file_with_params(model_path, params);
 }
 
-int waydict_whisper_full(struct whisper_context *ctx, const float *samples, int sample_count, int thread_count, const char *initial_prompt) {
+int waydict_whisper_full(struct whisper_context *ctx, const float *samples, int sample_count, int thread_count) {
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.n_threads = thread_count;
     params.no_context = true;
@@ -36,6 +36,5 @@ int waydict_whisper_full(struct whisper_context *ctx, const float *samples, int 
     params.temperature_inc = -1.0f;
     params.language = whisper_is_multilingual(ctx) ? "en" : NULL;
     params.detect_language = false;
-    params.initial_prompt = initial_prompt;
     return whisper_full(ctx, params, samples, sample_count);
 }

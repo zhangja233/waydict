@@ -6,11 +6,10 @@ import (
 )
 
 type Config struct {
-	ModelPath     string
-	Device        int
-	UseGPU        bool
-	NumThreads    int
-	InitialPrompt string
+	ModelPath  string
+	Device     int
+	UseGPU     bool
+	NumThreads int
 }
 
 func normalizeConfig(cfg Config) (Config, error) {

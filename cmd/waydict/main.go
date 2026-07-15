@@ -200,10 +200,6 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitcode.ModelInvalid
 	}
-	if err := cfg.ValidatePostProcess(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return exitcode.Generic
-	}
 	var prepared *preparedInjection
 	if *injectText {
 		var err error
@@ -217,10 +213,10 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 	if code != exitcode.Success {
 		return code
 	}
-	printText, _ := inject.NewPostProcessor(cfg.PostProcess, false, cfg.ASR.Vocabulary).Apply(tr.Text, inject.CaseState{AtBoundary: true})
+	printText, _ := inject.NewPostProcessor(cfg.PostProcess, false).Apply(tr.Text, inject.CaseState{AtBoundary: true})
 	fmt.Fprintln(stdout, strings.TrimRight(printText, " "))
 	if *injectText {
-		text, _ := inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace, cfg.ASR.Vocabulary).Apply(tr.Text, inject.CaseState{AtBoundary: true})
+		text, _ := inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace).Apply(tr.Text, inject.CaseState{AtBoundary: true})
 		if text == "" {
 			return exitcode.Success
 		}
@@ -292,7 +288,7 @@ var (
 	readAudioFileFunc     = audio.ReadFile
 	newASREngine          = func(cfg config.ASR) asr.Engine { return sherpaasr.New(cfg) }
 	validateModelForUseFn = validateModelForUse
-	newWhisperEngineHook  func(modelPath string, device, threads int, useGPU bool, initialPrompt string) (asr.Engine, error)
+	newWhisperEngineHook  func(modelPath string, device, threads int, useGPU bool) (asr.Engine, error)
 	probeGPUHook          func() (string, error)
 )
 
@@ -320,7 +316,7 @@ func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 	}
 	if hook := newWhisperEngineHook; hook != nil {
 		deps.NewWhisper = func(modelPath string, device int, useGPU bool) (asr.Engine, error) {
-			return hook(modelPath, device, cfg.ASR.NumThreads, useGPU, config.WhisperInitialPrompt(cfg.ASR.Vocabulary))
+			return hook(modelPath, device, cfg.ASR.NumThreads, useGPU)
 		}
 	}
 	engine, resolution, err := asr.Resolve(cfg.ASR.Engine, provider, cfg.ASR.GPUDevice, deps)

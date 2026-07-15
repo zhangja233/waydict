@@ -58,21 +58,20 @@ type VAD struct {
 }
 
 type ASR struct {
-	Engine         string   `toml:"engine"`
-	Provider       string   `toml:"provider"`
-	WhisperModel   string   `toml:"whisper_model"`
-	Vocabulary     []string `toml:"vocabulary"`
-	GPUDevice      int      `toml:"gpu_device"`
-	ModelType      string   `toml:"model_type"`
-	DecodingMethod string   `toml:"decoding_method"`
-	NumThreads     int      `toml:"num_threads"`
-	MaxActivePaths int      `toml:"max_active_paths"`
-	BlankPenalty   float32  `toml:"blank_penalty"`
-	ModelDir       string   `toml:"model_dir"`
-	Encoder        string   `toml:"encoder"`
-	Decoder        string   `toml:"decoder"`
-	Joiner         string   `toml:"joiner"`
-	Tokens         string   `toml:"tokens"`
+	Engine         string  `toml:"engine"`
+	Provider       string  `toml:"provider"`
+	WhisperModel   string  `toml:"whisper_model"`
+	GPUDevice      int     `toml:"gpu_device"`
+	ModelType      string  `toml:"model_type"`
+	DecodingMethod string  `toml:"decoding_method"`
+	NumThreads     int     `toml:"num_threads"`
+	MaxActivePaths int     `toml:"max_active_paths"`
+	BlankPenalty   float32 `toml:"blank_penalty"`
+	ModelDir       string  `toml:"model_dir"`
+	Encoder        string  `toml:"encoder"`
+	Decoder        string  `toml:"decoder"`
+	Joiner         string  `toml:"joiner"`
+	Tokens         string  `toml:"tokens"`
 }
 
 type Injection struct {
@@ -85,12 +84,11 @@ type Injection struct {
 }
 
 type PostProcess struct {
-	TrimLeading              bool              `toml:"trim_leading"`
-	CollapseSpaces           bool              `toml:"collapse_spaces"`
-	FixPunctuationSpacing    bool              `toml:"fix_punctuation_spacing"`
-	SpokenFormattingCommands bool              `toml:"spoken_formatting_commands"`
-	SmartCase                bool              `toml:"smart_case"`
-	Replacements             map[string]string `toml:"replacements"`
+	TrimLeading              bool `toml:"trim_leading"`
+	CollapseSpaces           bool `toml:"collapse_spaces"`
+	FixPunctuationSpacing    bool `toml:"fix_punctuation_spacing"`
+	SpokenFormattingCommands bool `toml:"spoken_formatting_commands"`
+	SmartCase                bool `toml:"smart_case"`
 }
 
 type Sway struct {
@@ -220,13 +218,6 @@ func (c Config) WhisperModelPath() string {
 	return filepath.Join(DefaultModelsRoot(), "whisper", c.ASR.WhisperModel+".bin")
 }
 
-func WhisperInitialPrompt(vocabulary []string) string {
-	if len(vocabulary) == 0 {
-		return ""
-	}
-	return "Vocabulary: " + strings.Join(vocabulary, ", ") + "."
-}
-
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.Daemon.Socket) == "" {
 		return fmt.Errorf("daemon.socket must not be empty")
@@ -244,9 +235,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("audio.quantum_ms must be positive")
 	}
 	if err := c.ValidateASR(); err != nil {
-		return err
-	}
-	if err := c.ValidatePostProcess(); err != nil {
 		return err
 	}
 	if c.Injection.Engine != "wtype" {
@@ -319,29 +307,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func (c Config) ValidatePostProcess() error {
-	for key := range c.PostProcess.Replacements {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("postprocess.replacements keys must not be empty")
-		}
-		runes := []rune(key)
-		if !isASCIIWord(runes[0]) || !isASCIIWord(runes[len(runes)-1]) {
-			return fmt.Errorf("postprocess.replacements key %q must start and end with an ASCII word character [A-Za-z0-9_]", key)
-		}
-	}
-	return nil
-}
-
-func isASCIIWord(r rune) bool {
-	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_'
-}
-
 func (c Config) ValidateASR() error {
-	for i, word := range c.ASR.Vocabulary {
-		if strings.TrimSpace(word) == "" {
-			return fmt.Errorf("asr.vocabulary[%d] must not be empty", i)
-		}
-	}
 	switch c.ASR.Engine {
 	case asr.EngineSherpa:
 		return c.validateSherpaASR()

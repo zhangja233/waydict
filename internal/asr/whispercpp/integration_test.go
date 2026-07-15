@@ -32,10 +32,9 @@ func TestIntegrationTranscribe(t *testing.T) {
 		threads = 8
 	}
 	engine, err := whispercpp.New(whispercpp.Config{
-		ModelPath:     modelPath,
-		UseGPU:        os.Getenv("WAYDICT_TEST_WHISPER_GPU") == "1",
-		NumThreads:    threads,
-		InitialPrompt: os.Getenv("WAYDICT_TEST_WHISPER_PROMPT"),
+		ModelPath:  modelPath,
+		UseGPU:     os.Getenv("WAYDICT_TEST_WHISPER_GPU") == "1",
+		NumThreads: threads,
 	})
 	if err != nil {
 		t.Fatal(err)

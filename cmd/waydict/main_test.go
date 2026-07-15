@@ -186,26 +186,6 @@ engine = "other"
 	}
 }
 
-func TestTranscribeRejectsInvalidReplacementKey(t *testing.T) {
-	restore := replaceTranscribeDeps(t)
-	defer restore()
-	transcribeFileFunc = func(context.Context, config.Config, string, io.Writer) (asr.Transcript, int) {
-		t.Fatal("transcribe should not run with invalid postprocess config")
-		return asr.Transcript{}, exitcode.Success
-	}
-	path := writeConfig(t, `
-[postprocess.replacements]
-" " = "X"
-`)
-	var out, err bytes.Buffer
-	if got := run([]string{"transcribe", "--config", path, "--file", "sample.wav"}, &out, &err); got != exitcode.Generic {
-		t.Fatalf("exit = %d, want %d; stdout=%s stderr=%s", got, exitcode.Generic, out.String(), err.String())
-	}
-	if !strings.Contains(err.String(), "postprocess.replacements") {
-		t.Fatalf("stderr = %q, want replacement validation error", err.String())
-	}
-}
-
 func TestBenchRejectsInvalidASRConfig(t *testing.T) {
 	restore := replaceTranscribeDeps(t)
 	defer restore()
@@ -270,35 +250,6 @@ func TestResolveForcedWhisperWithoutHookFails(t *testing.T) {
 	}
 }
 
-func TestResolveWhisperPassesVocabularyPrompt(t *testing.T) {
-	restore := replaceTranscribeDeps(t)
-	defer restore()
-	cfg := config.Defaults()
-	cfg.ASR.Engine = asr.EngineWhisper
-	cfg.ASR.Provider = asr.ProviderCPU
-	cfg.ASR.Vocabulary = []string{"Claude", "Codex"}
-	modelPath := cfg.WhisperModelPath()
-	if err := os.MkdirAll(filepath.Dir(modelPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(modelPath, []byte("model"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	var initialPrompt string
-	newWhisperEngineHook = func(_ string, _ int, _ int, _ bool, stringPrompt string) (asr.Engine, error) {
-		initialPrompt = stringPrompt
-		return fakeEngine{}, nil
-	}
-	engine, _, err := resolveASREngine(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer engine.Close()
-	if want := config.WhisperInitialPrompt(cfg.ASR.Vocabulary); initialPrompt != want {
-		t.Fatalf("initial prompt = %q, want %q", initialPrompt, want)
-	}
-}
-
 func TestResolveAutoFallsBackWithReason(t *testing.T) {
 	restore := replaceTranscribeDeps(t)
 	defer restore()
@@ -338,7 +289,7 @@ func TestAutoLoadFailureFallsBackToSherpa(t *testing.T) {
 	if err := os.WriteFile(modelPath, []byte("model"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	newWhisperEngineHook = func(string, int, int, bool, string) (asr.Engine, error) {
+	newWhisperEngineHook = func(string, int, int, bool) (asr.Engine, error) {
 		return fakeEngine{err: errors.New("vulkan allocation failed")}, nil
 	}
 	probeGPUHook = func() (string, error) { return "test gpu", nil }

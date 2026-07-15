@@ -81,24 +81,13 @@ waydict doctor
 ### Dictation text
 
 ```toml
-[asr]
-vocabulary = ["Claude", "Codex"]
-
 [postprocess]
 smart_case = true
-
-[postprocess.replacements]
-cloud = "Claude"
-codec = "Codex"
 ```
 
-`smart_case` defaults to `true`. It capitalizes a segment's first word only when the segment completes a sentence at a sentence boundary; dictated words, phrases, and fragments stay lowercase. Standalone `I` and its contractions, all-caps acronyms, and terms in `asr.vocabulary` keep their casing across segments.
+`smart_case` defaults to `true`. It capitalizes a segment's first word only when the segment completes a sentence at a sentence boundary; dictated words, phrases, and fragments stay lowercase. Standalone `I`, its contractions, and all-caps acronyms keep their casing across segments.
 
-Replacements default to an empty table and are deterministic, case-insensitive whole-word substitutions on every engine. They are deliberately blunt: with the example above, a genuine "cloud" also becomes "Claude". The target is inserted with its configured casing, which is preserved even when the word begins a fragment (the target's first word is protected from smart-case lowercasing).
-
-`asr.vocabulary` defaults to an empty list. On Whisper it biases decoding through the initial prompt; sherpa-onnx/Parakeet uses it only as the smart-case protect-list and relies on replacements for corrections. Keep the list focused on terms you actually dictate: strong Whisper bias can emit a primed term for very short or ambiguous audio.
-
-Reloading config applies `[postprocess]` changes, including `smart_case` and replacements. Changing `asr.vocabulary`, like any other `[asr]` setting, requires a daemon restart. See [docs/sway.md](docs/sway.md) for the segment and host-specific behavior.
+Reloading config applies `[postprocess]` changes, including `smart_case`. See [docs/sway.md](docs/sway.md) for the segment behavior.
 
 ## GPU ASR
 

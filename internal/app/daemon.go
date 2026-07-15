@@ -26,7 +26,7 @@ func RunDaemon(ctx context.Context, cfg config.Config) error {
 type DaemonOptions struct {
 	ConfigPath       string
 	LogLevelOverride string
-	NewWhisper       func(modelPath string, device, threads int, useGPU bool, initialPrompt string) (asr.Engine, error)
+	NewWhisper       func(modelPath string, device, threads int, useGPU bool) (asr.Engine, error)
 	ProbeGPU         func() (string, error)
 }
 
@@ -155,7 +155,7 @@ func resolveDaemonASR(cfg config.Config, opts DaemonOptions) (asr.Engine, asr.Re
 	}
 	if hook := opts.NewWhisper; hook != nil {
 		deps.NewWhisper = func(modelPath string, device int, useGPU bool) (asr.Engine, error) {
-			return hook(modelPath, device, cfg.ASR.NumThreads, useGPU, config.WhisperInitialPrompt(cfg.ASR.Vocabulary))
+			return hook(modelPath, device, cfg.ASR.NumThreads, useGPU)
 		}
 	}
 	engine, resolution, err := asr.Resolve(cfg.ASR.Engine, provider, cfg.ASR.GPUDevice, deps)

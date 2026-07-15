@@ -8,7 +8,7 @@ import (
 
 func TestPostProcessorPunctuationSpacing(t *testing.T) {
 	cfg := config.Defaults()
-	p := NewPostProcessor(cfg.PostProcess, true, nil)
+	p := NewPostProcessor(cfg.PostProcess, true)
 	got, next := p.Apply(" Hello   ( world ) , test !", CaseState{AtBoundary: true})
 	if got != "Hello (world), test! " {
 		t.Fatalf("got %q", got)
@@ -21,7 +21,7 @@ func TestPostProcessorPunctuationSpacing(t *testing.T) {
 func TestSpokenCommands(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.PostProcess.SpokenFormattingCommands = true
-	p := NewPostProcessor(cfg.PostProcess, true, nil)
+	p := NewPostProcessor(cfg.PostProcess, true)
 	tests := []struct {
 		name string
 		text string
@@ -46,12 +46,11 @@ func TestSpokenCommands(t *testing.T) {
 
 func TestPostProcessorSmartCase(t *testing.T) {
 	tests := []struct {
-		name       string
-		text       string
-		st         CaseState
-		vocabulary []string
-		want       string
-		next       CaseState
+		name string
+		text string
+		st   CaseState
+		want string
+		next CaseState
 	}{
 		{
 			name: "complete sentence at boundary",
@@ -87,22 +86,6 @@ func TestPostProcessorSmartCase(t *testing.T) {
 			st:   CaseState{},
 			want: "NASA data ",
 			next: CaseState{},
-		},
-		{
-			name:       "protected word",
-			text:       "Claude helped",
-			st:         CaseState{},
-			vocabulary: []string{"Claude"},
-			want:       "Claude helped ",
-			next:       CaseState{},
-		},
-		{
-			name:       "protected possessive",
-			text:       "Claude's answer",
-			st:         CaseState{},
-			vocabulary: []string{"Claude"},
-			want:       "Claude's answer ",
-			next:       CaseState{},
 		},
 		{
 			name: "acronym possessive",
@@ -150,7 +133,7 @@ func TestPostProcessorSmartCase(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Defaults()
-			p := NewPostProcessor(cfg.PostProcess, true, tc.vocabulary)
+			p := NewPostProcessor(cfg.PostProcess, true)
 			got, next := p.Apply(tc.text, tc.st)
 			if got != tc.want || next != tc.next {
 				t.Fatalf("Apply() = %q, %+v; want %q, %+v", got, next, tc.want, tc.next)
@@ -162,7 +145,7 @@ func TestPostProcessorSmartCase(t *testing.T) {
 func TestPostProcessorSmartCaseDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.PostProcess.SmartCase = false
-	p := NewPostProcessor(cfg.PostProcess, true, nil)
+	p := NewPostProcessor(cfg.PostProcess, true)
 	st := CaseState{}
 	got, next := p.Apply("HELLO i.", st)
 	if got != "HELLO i. " || next != st {
@@ -172,79 +155,10 @@ func TestPostProcessorSmartCaseDisabled(t *testing.T) {
 
 func TestPostProcessorEmptyPreservesState(t *testing.T) {
 	cfg := config.Defaults()
-	p := NewPostProcessor(cfg.PostProcess, true, nil)
+	p := NewPostProcessor(cfg.PostProcess, true)
 	st := CaseState{AtBoundary: true}
 	got, next := p.Apply(" \t\n", st)
 	if got != "" || next != st {
 		t.Fatalf("Apply() = %q, %+v; want empty output and %+v", got, next, st)
-	}
-}
-
-func TestPostProcessorReplacements(t *testing.T) {
-	tests := []struct {
-		name         string
-		text         string
-		replacements map[string]string
-		vocabulary   []string
-		st           CaseState
-		want         string
-	}{
-		{
-			name:         "whole word case insensitive",
-			text:         "the CLOUD",
-			replacements: map[string]string{"cloud": "Claude"},
-			st:           CaseState{AtBoundary: true},
-			want:         "the Claude",
-		},
-		{
-			name:         "substring unchanged",
-			text:         "icloud",
-			replacements: map[string]string{"cloud": "Claude"},
-			st:           CaseState{AtBoundary: true},
-			want:         "icloud",
-		},
-		{
-			name:         "replacement target auto-protected from casing",
-			text:         "Cloud helped",
-			replacements: map[string]string{"cloud": "Claude"},
-			st:           CaseState{},
-			want:         "Claude helped",
-		},
-		{
-			name:         "literal target",
-			text:         "token",
-			replacements: map[string]string{"token": "$1"},
-			st:           CaseState{},
-			want:         "$1",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := config.Defaults()
-			cfg.PostProcess.Replacements = tc.replacements
-			p := NewPostProcessor(cfg.PostProcess, false, tc.vocabulary)
-			got, _ := p.Apply(tc.text, tc.st)
-			if got != tc.want {
-				t.Fatalf("Apply() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestPostProcessorReplacementOrdering(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.PostProcess.SmartCase = false
-	cfg.PostProcess.Replacements = map[string]string{
-		"new":      "old",
-		"new york": "NYC",
-		"cat":      "dog",
-		"dog":      "eel",
-	}
-	for i := 0; i < 100; i++ {
-		p := NewPostProcessor(cfg.PostProcess, false, nil)
-		got, _ := p.Apply("new york and new cat", CaseState{})
-		if got != "NYC and old dog" {
-			t.Fatalf("Apply() = %q, want deterministic single-pass output", got)
-		}
 	}
 }

@@ -99,7 +99,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		injector:       deps.Injector,
 		focus:          deps.Focus,
 		logger:         deps.Logger,
-		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace, cfg.ASR.Vocabulary),
+		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
 		caseState:      inject.CaseState{AtBoundary: true},
 		startedAt:      time.Now(),
 		rootCtx:        ctx,
@@ -439,7 +439,7 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 		return withCode("restart_required", err)
 	}
 	a.cfg = cfg
-	a.post = inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace, cfg.ASR.Vocabulary)
+	a.post = inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace)
 	a.status.LastTranscriptRedacted = cfg.Daemon.RedactTranscriptsInLogs
 	if cfg.Daemon.RedactTranscriptsInLogs {
 		a.status.LastTranscript = ""

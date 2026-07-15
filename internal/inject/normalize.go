@@ -2,7 +2,6 @@ package inject
 
 import (
 	"regexp"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -16,60 +15,16 @@ type CaseState struct {
 }
 
 type PostProcessor struct {
-	cfg                config.PostProcess
-	appendSpace        bool
-	replacements       *regexp.Regexp
-	replacementTargets map[string]string
-	protect            map[string]struct{}
-	standaloneI        *regexp.Regexp
+	cfg         config.PostProcess
+	appendSpace bool
+	standaloneI *regexp.Regexp
 }
 
-func NewPostProcessor(cfg config.PostProcess, appendSpace bool, vocabulary []string) PostProcessor {
-	type pair struct {
-		from string
-		to   string
-	}
-	pairs := make([]pair, 0, len(cfg.Replacements))
-	for from, to := range cfg.Replacements {
-		pairs = append(pairs, pair{from: from, to: to})
-	}
-	sort.Slice(pairs, func(i, j int) bool {
-		if len(pairs[i].from) != len(pairs[j].from) {
-			return len(pairs[i].from) > len(pairs[j].from)
-		}
-		return pairs[i].from < pairs[j].from
-	})
-	alternatives := make([]string, 0, len(pairs))
-	targets := make(map[string]string, len(pairs))
-	for _, pair := range pairs {
-		alternatives = append(alternatives, regexp.QuoteMeta(pair.from))
-		key := strings.ToLower(pair.from)
-		if _, exists := targets[key]; !exists {
-			targets[key] = pair.to
-		}
-	}
-	var replacements *regexp.Regexp
-	if len(alternatives) > 0 {
-		replacements = regexp.MustCompile(`(?i)\b(` + strings.Join(alternatives, "|") + `)\b`)
-	}
-	protect := make(map[string]struct{}, len(vocabulary)+len(targets))
-	for _, word := range vocabulary {
-		protect[strings.ToLower(word)] = struct{}{}
-	}
-	// Protect each replacement target's first word so smart casing does not
-	// undo the casing the replacement just applied (e.g. cloud→Claude).
-	for _, to := range targets {
-		if fields := strings.Fields(to); len(fields) > 0 {
-			protect[strings.ToLower(fields[0])] = struct{}{}
-		}
-	}
+func NewPostProcessor(cfg config.PostProcess, appendSpace bool) PostProcessor {
 	return PostProcessor{
-		cfg:                cfg,
-		appendSpace:        appendSpace,
-		replacements:       replacements,
-		replacementTargets: targets,
-		protect:            protect,
-		standaloneI:        regexp.MustCompile(`\bi\b`),
+		cfg:         cfg,
+		appendSpace: appendSpace,
+		standaloneI: regexp.MustCompile(`\bi\b`),
 	}
 }
 
@@ -92,14 +47,6 @@ func (p PostProcessor) Apply(text string, st CaseState) (out string, next CaseSt
 	}
 	if p.cfg.CollapseSpaces {
 		text = spaces.ReplaceAllString(text, " ")
-	}
-	if p.replacements != nil {
-		text = p.replacements.ReplaceAllStringFunc(text, func(match string) string {
-			if target, ok := p.replacementTargets[strings.ToLower(match)]; ok {
-				return target
-			}
-			return match
-		})
 	}
 	if p.cfg.FixPunctuationSpacing {
 		text = fixPunctuationSpacing(text)
@@ -161,9 +108,6 @@ func (p PostProcessor) preserveFirstWord(word string) bool {
 		base = strings.TrimSuffix(base, "'s")
 	} else if strings.HasSuffix(base, "’s") {
 		base = strings.TrimSuffix(base, "’s")
-	}
-	if _, ok := p.protect[strings.ToLower(base)]; ok {
-		return true
 	}
 	if word == "I" || strings.HasPrefix(word, "I'") || strings.HasPrefix(word, "I’") {
 		return true

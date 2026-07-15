@@ -88,7 +88,6 @@ func Defaults() Config {
 		ASR: ASR{
 			Engine:         asr.EngineAuto,
 			Provider:       "",
-			Vocabulary:     []string{},
 			ModelType:      "nemo_transducer",
 			DecodingMethod: "greedy_search",
 			NumThreads:     4,
