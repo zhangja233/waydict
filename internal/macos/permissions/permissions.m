@@ -64,9 +64,16 @@ static WaydictPermissionResult waydict_open_settings(WaydictPermissionKind kind)
     if (url == nil) {
         return WaydictPermissionResultInvalidKind;
     }
-    return [[NSWorkspace sharedWorkspace] openURL:url]
-        ? WaydictPermissionResultOK
-        : WaydictPermissionResultOpenSettingsFailed;
+    __block BOOL opened = NO;
+    dispatch_block_t openBlock = ^{
+        opened = [[NSWorkspace sharedWorkspace] openURL:url];
+    };
+    if (NSThread.isMainThread) {
+        openBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), openBlock);
+    }
+    return opened ? WaydictPermissionResultOK : WaydictPermissionResultOpenSettingsFailed;
 }
 
 static WaydictPermissionState waydict_request_microphone(void) {

@@ -3,7 +3,7 @@
 package permissions
 
 /*
-#cgo CFLAGS: -fobjc-arc -mmacosx-version-min=13.0
+#cgo CFLAGS: -fobjc-arc -fblocks -mmacosx-version-min=13.0
 #cgo LDFLAGS: -framework AVFoundation -framework ApplicationServices -framework CoreGraphics -framework AppKit -framework Foundation
 #include "permissions.h"
 */

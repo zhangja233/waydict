@@ -31,6 +31,7 @@ func PeerUID(ctx context.Context) (int, bool) {
 }
 
 var ErrSocketPermission = errors.New("socket permission error")
+var ErrAlreadyRunning = errors.New("control server already running")
 
 const (
 	MaxControlFrameBytes = 512 * 1024
@@ -55,6 +56,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	ln, err := net.Listen("unix", s.socket)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return fmt.Errorf("%w: bind control socket %s: %v", ErrAlreadyRunning, s.socket, err)
+		}
 		return err
 	}
 	defer ln.Close()
@@ -190,7 +194,7 @@ func prepareSocket(socket string) error {
 	conn, err := net.DialTimeout("unix", socket, 100*time.Millisecond)
 	if err == nil {
 		_ = conn.Close()
-		return fmt.Errorf("control socket already has a listener at %s", socket)
+		return fmt.Errorf("%w: control socket already has a listener at %s", ErrAlreadyRunning, socket)
 	}
 	return os.Remove(socket)
 }

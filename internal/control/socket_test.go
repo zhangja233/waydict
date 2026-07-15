@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -127,7 +128,7 @@ func TestPrepareSocketRejectsActiveSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	if err := prepareSocket(socket); err == nil {
+	if err := prepareSocket(socket); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatal("expected active socket error")
 	}
 	if _, err := os.Stat(socket); err != nil {
