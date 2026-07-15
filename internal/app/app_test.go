@@ -463,6 +463,32 @@ func TestControlPermissionsUsesPlatformSource(t *testing.T) {
 	}
 }
 
+func TestControlRequestMicrophoneClassifiesDeniedStates(t *testing.T) {
+	for _, state := range []permissions.State{permissions.Denied, permissions.Restricted} {
+		t.Run(string(state), func(t *testing.T) {
+			app := New(context.Background(), config.Defaults(), Dependencies{
+				PermissionSource: fakePermissionSource{requestState: state},
+			})
+			resp := app.HandleControl(context.Background(), control.NewRequest("request_microphone_permission", nil))
+			if resp.OK || resp.Error == nil || resp.Error.Code != apperr.CodePermissionMicrophoneDenied {
+				t.Fatalf("response = %+v", resp)
+			}
+		})
+	}
+}
+
+func TestControlSetLaunchAtLoginReturnsActualStatus(t *testing.T) {
+	service := &fakeLoginItem{status: false}
+	app := New(context.Background(), config.Defaults(), Dependencies{LoginItem: service})
+	resp := app.HandleControl(context.Background(), control.NewRequest("set_launch_at_login", map[string]any{"enabled": true}))
+	if !resp.OK || resp.Data["enabled"] != false {
+		t.Fatalf("response = %+v", resp)
+	}
+	if service.requested == nil || !*service.requested {
+		t.Fatalf("requested = %v", service.requested)
+	}
+}
+
 type staticDeviceManager []audio.Device
 
 func (m staticDeviceManager) Devices(context.Context) ([]audio.Device, error) {
@@ -470,7 +496,8 @@ func (m staticDeviceManager) Devices(context.Context) ([]audio.Device, error) {
 }
 
 type fakePermissionSource struct {
-	snapshot permissions.Snapshot
+	snapshot     permissions.Snapshot
+	requestState permissions.State
 }
 
 func (f fakePermissionSource) Snapshot(context.Context) (permissions.Snapshot, error) {
@@ -478,10 +505,25 @@ func (f fakePermissionSource) Snapshot(context.Context) (permissions.Snapshot, e
 }
 
 func (f fakePermissionSource) Request(_ context.Context, kind permissions.Kind) (permissions.State, error) {
+	if f.requestState != "" {
+		return f.requestState, nil
+	}
 	return permissions.StateGranted, nil
 }
 
 func (f fakePermissionSource) OpenSettings(context.Context, permissions.Kind) error { return nil }
+
+type fakeLoginItem struct {
+	status    bool
+	requested *bool
+}
+
+func (f *fakeLoginItem) Status(context.Context) (bool, error) { return f.status, nil }
+
+func (f *fakeLoginItem) SetEnabled(_ context.Context, enabled bool) error {
+	f.requested = &enabled
+	return nil
+}
 
 func TestStopDiscardSuppressesPendingInjection(t *testing.T) {
 	cfg := config.Defaults()

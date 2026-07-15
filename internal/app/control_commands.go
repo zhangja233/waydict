@@ -94,6 +94,10 @@ func (a *App) handleExtendedControl(ctx context.Context, req control.Request) (c
 		if err := a.loginItem.SetEnabled(ctx, enabled); err != nil {
 			return fail(err)
 		}
+		enabled, err := a.loginItem.Status(ctx)
+		if err != nil {
+			return fail(err)
+		}
 		return control.OKData(req.ID, a.Status(ctx), map[string]any{"enabled": enabled}), true
 	case "restart_runtime":
 		if err := a.RestartRuntime(ctx); err != nil {
@@ -170,6 +174,10 @@ func (a *App) requestPermission(ctx context.Context, id string, kind permissions
 	}
 	state, err := a.permissionSource.Request(ctx, kind)
 	if err != nil {
+		return control.Fail(id, codeFor(err), err.Error(), a.Status(ctx))
+	}
+	if kind == permissions.KindMicrophone && (state == permissions.Denied || state == permissions.Restricted) {
+		err := apperr.New(apperr.CodePermissionMicrophoneDenied, "request microphone permission", fmt.Errorf("microphone permission is %s", state))
 		return control.Fail(id, codeFor(err), err.Error(), a.Status(ctx))
 	}
 	return control.OKData(id, a.Status(ctx), map[string]any{"kind": kind, "state": state})
