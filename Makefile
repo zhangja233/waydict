@@ -7,7 +7,7 @@ GO_ENV ?= CGO_ENABLED=1 CGO_CFLAGS_ALLOW=-fno-strict-overflow
 VERSION ?= 0.1.0
 BUILD_NUMBER ?= 1
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-BUILD_TAGS_MACOS ?=
+BUILD_TAGS_MACOS ?= coreaudio
 empty :=
 space := $(empty) $(empty)
 comma := ,

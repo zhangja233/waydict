@@ -82,6 +82,20 @@ static NSDictionary *WDInstallationInfo(void) {
     }
 }
 
+- (void)systemWillSleep:(NSNotification *)notification {
+    (void)notification;
+    if (![self emitAction:WaydictActionSystemWillSleep payload:nil number:0]) {
+        [self showBusyMessage];
+    }
+}
+
+- (void)systemDidWake:(NSNotification *)notification {
+    (void)notification;
+    if (![self emitAction:WaydictActionSystemDidWake payload:nil number:0]) {
+        [self showBusyMessage];
+    }
+}
+
 - (BOOL)emitAction:(WaydictAppAction)action payload:(NSString *)payload number:(int64_t)number {
     NSData *data = payload == nil ? nil : [payload dataUsingEncoding:NSUTF8StringEncoding];
     if (data.length > WDMaxPayloadBytes) {
@@ -153,6 +167,14 @@ waydict_host_t waydict_host_create(void) {
         [NSWorkspace.sharedWorkspace.notificationCenter addObserver:host
                                                             selector:@selector(workspaceDidActivate:)
                                                                 name:NSWorkspaceDidActivateApplicationNotification
+                                                              object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:host
+                                                            selector:@selector(systemWillSleep:)
+                                                                name:NSWorkspaceWillSleepNotification
+                                                              object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:host
+                                                            selector:@selector(systemDidWake:)
+                                                                name:NSWorkspaceDidWakeNotification
                                                               object:nil];
         return (__bridge_retained void *)host;
     }

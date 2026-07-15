@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"waydict/internal/audio/coreaudio"
 	"waydict/internal/buildinfo"
 	"waydict/internal/config"
 	"waydict/internal/control"
@@ -51,6 +52,6 @@ func (darwinRegistry) Checks(_ context.Context, cfg config.Config) []Result {
 			results = append(results, errorResult(item.name, err))
 		}
 	}
-	results = append(results, Result{Level: Info, Name: "native checks", Detail: "app-host permission and signing probes are available after PR3 wiring"})
+	results = append(results, errorResult("CoreAudio", coreaudio.Check()))
 	return results
 }

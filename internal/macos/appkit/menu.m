@@ -94,13 +94,8 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
     [self.menu addItem:self.shortcutItem];
     [self.menu addItem:NSMenuItem.separatorItem];
 
-    NSMenu *microphoneMenu = [[NSMenu alloc] initWithTitle:WDLocalized(@"microphone", @"Microphone")];
-    NSMenuItem *defaultMicrophone = WDItem(WDLocalized(@"system_default", @"System Default"), nil, nil);
-    defaultMicrophone.enabled = NO;
-    defaultMicrophone.state = NSControlStateValueOn;
-    [microphoneMenu addItem:defaultMicrophone];
     self.microphoneItem = WDItem(WDLocalized(@"microphone", @"Microphone"), nil, nil);
-    self.microphoneItem.submenu = microphoneMenu;
+    self.microphoneItem.submenu = [[NSMenu alloc] initWithTitle:WDLocalized(@"microphone", @"Microphone")];
     [self.menu addItem:self.microphoneItem];
     self.modelItem = WDItem(WDLocalized(@"model.unavailable", @"Model: unavailable"), nil, nil);
     self.modelItem.enabled = NO;
@@ -235,6 +230,43 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
     self.shortcutItem.title = shortcut.length == 0
         ? WDLocalized(@"shortcut.default", @"Shortcut: ⌃⇧⌘Space")
         : [NSString stringWithFormat:WDLocalized(@"shortcut.format", @"Shortcut: %@"), shortcut];
+
+    NSString *selectedDevice = WDString(viewModel, @"selected_audio_device_uid");
+    BOOL deviceControlled = WDBool(viewModel, @"audio_device_controlled");
+    NSMenu *microphoneMenu = [[NSMenu alloc] initWithTitle:WDLocalized(@"microphone", @"Microphone")];
+    NSMenuItem *defaultMicrophone = WDItem(WDLocalized(@"system_default", @"System Default"), @selector(performAction:), self);
+    defaultMicrophone.tag = WaydictActionSelectAudioDevice;
+    defaultMicrophone.representedObject = @"default";
+    defaultMicrophone.enabled = !blocked && !active && !deviceControlled;
+    defaultMicrophone.state = selectedDevice.length == 0 ? NSControlStateValueOn : NSControlStateValueOff;
+    [microphoneMenu addItem:defaultMicrophone];
+    NSArray *audioDevices = [viewModel[@"audio_devices"] isKindOfClass:NSArray.class] ? viewModel[@"audio_devices"] : @[];
+    for (id value in audioDevices) {
+        if (![value isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
+        NSDictionary *device = value;
+        NSString *identifier = WDString(device, @"id");
+        NSString *name = WDString(device, @"name");
+        if (identifier.length == 0 || name.length == 0) {
+            continue;
+        }
+        BOOL connected = WDBool(device, @"connected");
+        NSString *title = WDBool(device, @"default")
+            ? [NSString stringWithFormat:@"%@ (%@)", name, WDLocalized(@"default", @"Default")]
+            : name;
+        NSMenuItem *item = WDItem(title, @selector(performAction:), self);
+        item.tag = WaydictActionSelectAudioDevice;
+        item.representedObject = identifier;
+        item.enabled = !blocked && !active && !deviceControlled && connected;
+        item.state = [selectedDevice isEqualToString:identifier] ? NSControlStateValueOn : NSControlStateValueOff;
+        [microphoneMenu addItem:item];
+    }
+    self.microphoneItem.submenu = microphoneMenu;
+    NSString *microphoneName = WDString(viewModel, @"audio_device_name");
+    self.microphoneItem.title = microphoneName.length == 0
+        ? WDLocalized(@"microphone", @"Microphone")
+        : [NSString stringWithFormat:@"%@: %@", WDLocalized(@"microphone", @"Microphone"), microphoneName];
 
     NSString *engine = WDString(viewModel, @"asr_engine");
     NSString *model = WDString(viewModel, @"asr_model");

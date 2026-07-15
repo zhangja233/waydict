@@ -246,6 +246,38 @@ func TestSourceFactoryRetriesStartFailure(t *testing.T) {
 	_ = app.Stop(ctx, false)
 }
 
+func TestAudioDeviceAddedEventRecreatesIdleSource(t *testing.T) {
+	cfg := config.Defaults()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan audio.Event, 1)
+	recreated := make(chan struct{}, 1)
+	New(ctx, cfg, Dependencies{
+		Source: &eventAudioSource{events: events},
+		AudioSourceFactory: func(config.Audio) (audio.Source, error) {
+			recreated <- struct{}{}
+			return &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond}, nil
+		},
+	})
+	events <- audio.Event{Kind: audio.EventDeviceAdded, DeviceID: "device-1", At: time.Now()}
+	select {
+	case <-recreated:
+	case <-time.After(time.Second):
+		t.Fatal("device-added event did not recreate the idle source")
+	}
+}
+
+func TestAudioRetryabilityIsTyped(t *testing.T) {
+	nonRetryable := apperr.New(apperr.CodeAudioDeviceNotFound, "select input", errors.New("missing"))
+	if audioRetryable(nonRetryable) {
+		t.Fatal("missing-device error must not retry")
+	}
+	retryable := &apperr.Error{Code: apperr.CodeAudioDeviceDisconnected, Operation: "read input", Retryable: true, Err: errors.New("disconnected")}
+	if !audioRetryable(retryable) {
+		t.Fatal("typed transient error must retry")
+	}
+}
+
 func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
@@ -1307,6 +1339,17 @@ func (s *resetTrackingSegmenter) Name() string { return "fake" }
 type errorSource struct {
 	sampleRate int
 }
+
+type eventAudioSource struct {
+	events chan audio.Event
+}
+
+func (*eventAudioSource) Start(context.Context) error                  { return nil }
+func (*eventAudioSource) Pause(context.Context) error                  { return nil }
+func (*eventAudioSource) Stop(context.Context) error                   { return nil }
+func (*eventAudioSource) Read(context.Context, []float32) (int, error) { return 0, nil }
+func (*eventAudioSource) Stats() audio.Stats                           { return audio.Stats{SampleRate: 16000} }
+func (s *eventAudioSource) Events() <-chan audio.Event                 { return s.events }
 
 func (s *errorSource) Start(context.Context) error { return nil }
 func (s *errorSource) Pause(context.Context) error { return nil }

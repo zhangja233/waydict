@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"waydict/internal/modelinstall"
 	"waydict/internal/permissions"
 	"waydict/internal/platform"
+	"waydict/internal/preferences"
 	"waydict/pkg/api"
 )
 
@@ -291,6 +293,13 @@ func (c *appController) handleEvent(ctx context.Context, event appkit.Event) err
 	case appkit.ActionCopyDiagnostics:
 		c.host.ShowDiagnostics(true)
 		return nil
+	case appkit.ActionSystemWillSleep:
+		if c.runtime.App.Status(ctx).Audio.Capturing {
+			return c.runtime.App.Stop(ctx, false)
+		}
+		return nil
+	case appkit.ActionSystemDidWake:
+		return c.runtime.RecreateAudio(ctx)
 	case appkit.ActionQuit:
 		c.cancel()
 		return nil
@@ -362,7 +371,7 @@ func (c *appController) pollStatus(ctx context.Context) {
 	havePrevious := false
 	for {
 		view := c.currentView(ctx)
-		if !havePrevious || view != previous {
+		if !havePrevious || !reflect.DeepEqual(view, previous) {
 			_ = c.host.Update(view)
 			previous = view
 			havePrevious = true
@@ -402,6 +411,34 @@ func (c *appController) currentView(ctx context.Context) appkit.ViewModel {
 		view.HotkeyDescription = hotkeyDescription(status.Hotkey.Modifiers, status.Hotkey.Key)
 	}
 	view.AudioDeviceName = status.Audio.DeviceName
+	view.AudioDeviceID = status.Audio.DeviceID
+	view.AudioDeviceControlled = c.cfg.IsExplicit("audio.device")
+	if view.AudioDeviceControlled {
+		view.SelectedAudioDevice = c.cfg.Audio.Device
+	} else if c.runtime.Platform.Preferences != nil {
+		preferenceCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		selected, found, err := c.runtime.Platform.Preferences.String(preferenceCtx, preferences.KeySelectedAudioDeviceUID)
+		cancel()
+		if err == nil && found {
+			view.SelectedAudioDevice = selected
+		}
+	}
+	if c.runtime.Platform.DeviceManager != nil {
+		deviceCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		devices, err := c.runtime.Platform.DeviceManager.Devices(deviceCtx)
+		cancel()
+		if err == nil {
+			view.AudioDevices = make([]appkit.AudioDevice, 0, len(devices))
+			for _, device := range devices {
+				view.AudioDevices = append(view.AudioDevices, appkit.AudioDevice{
+					ID:        device.ID,
+					Name:      device.Name,
+					Default:   device.Default,
+					Connected: device.Connected,
+				})
+			}
+		}
+	}
 	view.AudioBackend = status.Audio.Backend
 	view.InjectionBackend = status.Injection.Engine
 	view.FocusBackend = status.Focus.Backend

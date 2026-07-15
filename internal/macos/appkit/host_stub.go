@@ -32,6 +32,8 @@ const (
 	ActionRunDiagnostics
 	ActionCopyDiagnostics
 	ActionQuit
+	ActionSystemWillSleep
+	ActionSystemDidWake
 )
 
 type Event struct {
@@ -47,41 +49,52 @@ type Installation struct {
 	Blocked      bool   `json:"blocked"`
 }
 
+type AudioDevice struct {
+	ID        string
+	Name      string
+	Default   bool
+	Connected bool
+}
+
 type ViewModel struct {
-	State                string
-	LastError            string
-	LastWarning          string
-	MicrophonePermission string
-	Accessibility        string
-	InputMonitoring      string
-	LaunchAtLogin        bool
-	LaunchAtLoginError   string
-	HotkeyMode           string
-	HotkeyDescription    string
-	HotkeyAvailable      bool
-	AudioDeviceName      string
-	ASREngine            string
-	ASRModel             string
-	ASRProvider          string
-	ModelsReady          bool
-	ModelStatus          string
-	PendingRestart       bool
-	InstallingModels     bool
-	InstallationBlocked  bool
-	InstallationMessage  string
-	Version              string
-	Commit               string
-	BuildNumber          string
-	BuildTags            string
-	Architecture         string
-	Platform             string
-	ConfigPath           string
-	LegacyConfig         bool
-	MigrationWarning     string
-	AudioBackend         string
-	InjectionBackend     string
-	FocusBackend         string
-	SocketPath           string
+	State                 string
+	LastError             string
+	LastWarning           string
+	MicrophonePermission  string
+	Accessibility         string
+	InputMonitoring       string
+	LaunchAtLogin         bool
+	LaunchAtLoginError    string
+	HotkeyMode            string
+	HotkeyDescription     string
+	HotkeyAvailable       bool
+	AudioDeviceName       string
+	AudioDeviceID         string
+	SelectedAudioDevice   string
+	AudioDeviceControlled bool
+	AudioDevices          []AudioDevice
+	ASREngine             string
+	ASRModel              string
+	ASRProvider           string
+	ModelsReady           bool
+	ModelStatus           string
+	PendingRestart        bool
+	InstallingModels      bool
+	InstallationBlocked   bool
+	InstallationMessage   string
+	Version               string
+	Commit                string
+	BuildNumber           string
+	BuildTags             string
+	Architecture          string
+	Platform              string
+	ConfigPath            string
+	LegacyConfig          bool
+	MigrationWarning      string
+	AudioBackend          string
+	InjectionBackend      string
+	FocusBackend          string
+	SocketPath            string
 }
 
 type Host struct{}

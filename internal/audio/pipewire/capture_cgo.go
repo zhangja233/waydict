@@ -48,7 +48,7 @@ func New(cfg config.Audio) (*Capture, error) {
 
 func (c *Capture) Start(context.Context) error {
 	if rc := C.sv_pw_capture_start(c.ptr, 2000); rc != 0 {
-		return apperr.New(apperr.CodeAudioStartFailed, "start PipeWire capture", fmt.Errorf("native error %d", int(rc)))
+		return retryableError(apperr.CodeAudioStartFailed, "start PipeWire capture", fmt.Errorf("native error %d", int(rc)))
 	}
 	return nil
 }
@@ -88,9 +88,13 @@ func (c *Capture) Read(ctx context.Context, dst []float32) (int, error) {
 			return 0, ctx.Err()
 		default:
 		}
-		return 0, apperr.New(apperr.CodeAudioDeviceDisconnected, "read PipeWire capture", fmt.Errorf("native error %d", int(n)))
+		return 0, retryableError(apperr.CodeAudioDeviceDisconnected, "read PipeWire capture", fmt.Errorf("native error %d", int(n)))
 	}
 	return int(n), nil
+}
+
+func retryableError(code, operation string, err error) error {
+	return &apperr.Error{Code: code, Operation: operation, Retryable: true, Err: err}
 }
 
 func (c *Capture) Stats() audio.Stats {

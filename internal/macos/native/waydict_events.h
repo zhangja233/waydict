@@ -28,6 +28,8 @@ typedef enum {
     WaydictActionRunDiagnostics = 18,
     WaydictActionCopyDiagnostics = 19,
     WaydictActionQuit = 20,
+    WaydictActionSystemWillSleep = 21,
+    WaydictActionSystemDidWake = 22,
 } WaydictAppAction;
 
 #endif

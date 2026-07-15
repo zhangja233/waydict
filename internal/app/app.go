@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -102,30 +103,38 @@ type App struct {
 	post               inject.PostProcessor
 	caseState          inject.CaseState
 
-	mu             sync.Mutex
-	segMu          sync.Mutex // serializes segmenter access (silero VAD is not concurrency-safe)
-	status         api.Status
-	startedAt      time.Time
-	sessionCancel  context.CancelFunc
-	captureDone    chan struct{}
-	capturing      bool
-	rootCtx        context.Context
-	asrQueue       chan segmentJob
-	shutdown       func()
-	lastActivity   time.Time
-	retryingAudio  bool
-	currentSession uint64
-	discarded      map[uint64]struct{}
-	pendingASR     int
-	pendingSession map[uint64]int
-	deferred       map[uint64]*deferredSession
-	segmentOpen    bool
-	pendingConfig  *config.Config
+	mu               sync.Mutex
+	audioRecreateMu  sync.Mutex
+	segMu            sync.Mutex // serializes segmenter access (silero VAD is not concurrency-safe)
+	status           api.Status
+	startedAt        time.Time
+	sessionCancel    context.CancelFunc
+	captureDone      chan struct{}
+	capturing        bool
+	rootCtx          context.Context
+	asrQueue         chan segmentJob
+	shutdown         func()
+	lastActivity     time.Time
+	retryingAudio    bool
+	sourceGeneration uint64
+	audioEvents      chan audioEventRequest
+	currentSession   uint64
+	discarded        map[uint64]struct{}
+	pendingASR       int
+	pendingSession   map[uint64]int
+	deferred         map[uint64]*deferredSession
+	segmentOpen      bool
+	pendingConfig    *config.Config
 }
 
 type segmentJob struct {
 	session uint64
 	segment asr.AudioSegment
+}
+
+type audioEventRequest struct {
+	generation uint64
+	event      audio.Event
 }
 
 func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
@@ -162,10 +171,14 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		startedAt:          time.Now(),
 		rootCtx:            ctx,
 		asrQueue:           make(chan segmentJob, 8),
+		audioEvents:        make(chan audioEventRequest, 16),
 		shutdown:           deps.Shutdown,
 		discarded:          make(map[uint64]struct{}),
 		pendingSession:     make(map[uint64]int),
 		deferred:           make(map[uint64]*deferredSession),
+	}
+	if deps.Source != nil {
+		a.sourceGeneration = 1
 	}
 	if deps.Focus != nil {
 		a.guard = focus.NewGuard(deps.Focus, focus.Policy(cfg.EffectiveFocusPolicy()))
@@ -222,6 +235,10 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		}
 	}
 	go a.asrWorker(ctx)
+	go a.audioEventWorker(ctx)
+	if deps.Source != nil {
+		go a.watchAudioEvents(ctx, deps.Source, a.sourceGeneration)
+	}
 	return a
 }
 
@@ -370,23 +387,30 @@ func (a *App) StartWithOptions(ctx context.Context, opts StartOptions) error {
 	if err := src.Start(ctx); err != nil {
 		firstErr := err
 		a.clearSource(src)
-		if retryErr := a.recreateSource(ctx); retryErr != nil {
-			err = fmt.Errorf("restart capture after %v: %w", firstErr, retryErr)
-			return a.failStart(apperr.CodeAudioStartFailed, "start audio capture", err)
+		if errors.Is(firstErr, audio.ErrUnavailable) {
+			if retryErr := a.recreateSource(ctx); retryErr == nil {
+				a.mu.Lock()
+				src = a.source
+				a.mu.Unlock()
+				if src != nil {
+					err = src.Start(ctx)
+					if err == nil {
+						goto captureStarted
+					}
+					a.clearSource(src)
+				}
+			} else {
+				err = fmt.Errorf("restart capture after %v: %w", firstErr, retryErr)
+			}
 		}
-		a.mu.Lock()
-		src = a.source
-		a.mu.Unlock()
-		if src == nil {
-			err = audio.ErrUnavailable
-		} else {
-			err = src.Start(ctx)
+		err = normalizeRetryableAudioError(apperr.CodeAudioStartFailed, "start audio capture", err)
+		if audioRetryable(err) {
+			a.scheduleAudioRetry()
 		}
-		if err != nil {
-			a.clearSource(src)
-			return a.failStart(apperr.CodeAudioStartFailed, "start audio capture", err)
-		}
+		return a.failStart(apperr.CodeAudioStartFailed, "start audio capture", err)
 	}
+
+captureStarted:
 	sessionCtx, cancel := context.WithCancel(a.rootCtx)
 	captureDone := make(chan struct{})
 	a.mu.Lock()
@@ -408,7 +432,7 @@ func (a *App) StartWithOptions(ctx context.Context, opts StartOptions) error {
 	a.logInfo("capture started", "session", session)
 	go func() {
 		defer close(captureDone)
-		a.captureLoop(sessionCtx)
+		a.captureLoop(sessionCtx, session)
 	}()
 	go a.autoStopLoop(sessionCtx)
 	return nil
@@ -892,7 +916,7 @@ func permissionStatus(snapshot permissions.Snapshot) *api.PermissionStatus {
 	}
 }
 
-func (a *App) captureLoop(ctx context.Context) {
+func (a *App) captureLoop(ctx context.Context, session uint64) {
 	buf := make([]float32, a.cfg.Audio.SampleRate*a.cfg.Audio.QuantumMS/1000)
 	if len(buf) == 0 {
 		buf = make([]float32, 320)
@@ -938,9 +962,27 @@ func (a *App) captureLoop(ctx context.Context) {
 				}
 				reason = "read_error"
 				a.logWarn("audio read failed", "error", err)
-				err = normalizeError(apperr.CodeAudioDeviceDisconnected, "read audio capture", err)
+				err = normalizeRetryableAudioError(apperr.CodeAudioDeviceDisconnected, "read audio capture", err)
+				a.mu.Lock()
+				cancel := a.sessionCancel
+				a.sessionCancel = nil
+				a.discarded[session] = struct{}{}
+				if deferred := a.deferred[session]; deferred != nil {
+					deferred.parts = nil
+				}
+				if a.pendingSession[session] == 0 {
+					delete(a.discarded, session)
+					delete(a.deferred, session)
+				}
+				a.mu.Unlock()
+				if cancel != nil {
+					cancel()
+				}
+				a.clearSource(src)
 				a.recordError(api.StateIdle, apperr.Code(err), err)
-				a.scheduleAudioRetry()
+				if audioRetryable(err) {
+					a.scheduleAudioRetry()
+				}
 			}
 			if ctx.Err() != nil {
 				reason = "context_done"
@@ -1044,6 +1086,8 @@ func (a *App) touchActivity(now time.Time) {
 }
 
 func (a *App) recreateSource(ctx context.Context) error {
+	a.audioRecreateMu.Lock()
+	defer a.audioRecreateMu.Unlock()
 	if a.sourceFactory == nil && a.audioSourceFactory == nil {
 		return audio.ErrUnavailable
 	}
@@ -1073,10 +1117,16 @@ func (a *App) recreateSource(ctx context.Context) error {
 	if src == nil {
 		return audio.ErrUnavailable
 	}
+	if err := ctx.Err(); err != nil {
+		closeSource(src)
+		return err
+	}
 	stats := src.Stats()
 	a.mu.Lock()
 	old := a.source
 	a.source = src
+	a.sourceGeneration++
+	generation := a.sourceGeneration
 	a.status.Audio.Capturing = false
 	if stats.Backend != "" {
 		a.status.Audio.Backend = stats.Backend
@@ -1087,6 +1137,7 @@ func (a *App) recreateSource(ctx context.Context) error {
 	a.status.Audio.InputLatency = stats.InputLatency
 	a.status.Audio.InputLatencyMS = float64(stats.InputLatency) / float64(time.Millisecond)
 	a.mu.Unlock()
+	go a.watchAudioEvents(a.rootCtx, src, generation)
 	closeSource(old)
 	a.logDebug("audio source recreated", "backend", stats.Backend, "sample_rate", stats.SampleRate)
 	return nil
@@ -1115,9 +1166,10 @@ func (a *App) scheduleAudioRetry() {
 			}
 			a.mu.Lock()
 			capturing := a.capturing
+			sourceReady := a.source != nil
 			a.mu.Unlock()
-			if capturing {
-				a.logDebug("audio retry stopped because capture resumed")
+			if capturing || sourceReady {
+				a.logDebug("audio retry stopped because a source is ready", "capturing", capturing)
 				return
 			}
 			if err := a.recreateSource(a.rootCtx); err == nil {
@@ -1128,11 +1180,70 @@ func (a *App) scheduleAudioRetry() {
 				return
 			}
 			a.logWarn("audio source retry failed", "next_backoff_ms", backoff.Milliseconds())
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
+			backoff = min(backoff*2, 30*time.Second)
 		}
 	}()
+}
+
+func audioRetryable(err error) bool {
+	var typed *apperr.Error
+	return errors.As(err, &typed) && typed.Retryable
+}
+
+func normalizeRetryableAudioError(code, operation string, err error) error {
+	if err == nil || apperr.Code(err) != apperr.CodeInternalError {
+		return err
+	}
+	return &apperr.Error{Code: code, Operation: operation, Retryable: true, Err: err}
+}
+
+func (a *App) watchAudioEvents(ctx context.Context, src audio.Source, generation uint64) {
+	events, ok := src.(audio.EventSource)
+	if !ok {
+		return
+	}
+	channel := events.Events()
+	if channel == nil {
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, open := <-channel:
+			if !open {
+				return
+			}
+			select {
+			case a.audioEvents <- audioEventRequest{generation: generation, event: event}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (a *App) audioEventWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case request := <-a.audioEvents:
+			a.mu.Lock()
+			current := request.generation == a.sourceGeneration
+			idle := a.status.State == api.StateIdle && !a.capturing
+			a.mu.Unlock()
+			if !current {
+				continue
+			}
+			a.logDebug("audio source event", "kind", request.event.Kind, "device_id", request.event.DeviceID, "error", request.event.Err)
+			if request.event.Kind == audio.EventDeviceAdded && idle {
+				if err := a.recreateSource(ctx); err != nil {
+					a.logWarn("audio source event rebuild failed", "kind", request.event.Kind, "error", err)
+				}
+			}
+		}
+	}
 }
 
 func closeSource(src audio.Source) {
@@ -1142,11 +1253,24 @@ func closeSource(src audio.Source) {
 }
 
 func (a *App) clearSource(src audio.Source) {
+	a.audioRecreateMu.Lock()
+	defer a.audioRecreateMu.Unlock()
 	a.mu.Lock()
-	a.source = nil
-	a.status.Audio.Capturing = false
+	if sameAudioSource(a.source, src) {
+		a.source = nil
+		a.sourceGeneration++
+		a.status.Audio.Capturing = false
+	}
 	a.mu.Unlock()
 	closeSource(src)
+}
+
+func sameAudioSource(left, right audio.Source) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	leftType := reflect.TypeOf(left)
+	return leftType == reflect.TypeOf(right) && leftType.Comparable() && left == right
 }
 
 func (a *App) asrWorker(ctx context.Context) {

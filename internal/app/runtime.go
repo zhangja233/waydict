@@ -285,9 +285,11 @@ func (r *Runtime) Close(ctx context.Context) error {
 		if r.App.guard != nil {
 			r.App.guard.Reset()
 		}
+		r.App.audioRecreateMu.Lock()
 		r.App.mu.Lock()
 		source := r.App.source
 		r.App.source = nil
+		r.App.sourceGeneration++
 		r.App.mu.Unlock()
 		if source != nil {
 			if err := source.Stop(ctx); err != nil {
@@ -295,6 +297,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 			}
 			closeSource(source)
 		}
+		r.App.audioRecreateMu.Unlock()
 		if err := r.App.CloseASR(); err != nil {
 			errs = append(errs, err)
 		}
@@ -485,6 +488,8 @@ func (r *Runtime) restartRuntime(ctx context.Context, next config.Config) error 
 	if err := next.ValidateFor(capabilitySetForRuntime(r.Platform)); err != nil {
 		return apperr.New(apperr.CodeConfigInvalid, "restart runtime", err)
 	}
+	r.App.audioRecreateMu.Lock()
+	defer r.App.audioRecreateMu.Unlock()
 	r.App.mu.Lock()
 	busy := r.App.capturing || r.App.pendingASR > 0 || len(r.App.deferred) > 0
 	r.App.mu.Unlock()
@@ -559,6 +564,7 @@ func (r *Runtime) restartRuntime(ctx context.Context, next config.Config) error 
 	r.App.injector = injector
 	r.App.focus = provider
 	r.App.source = nil
+	r.App.sourceGeneration++
 	if provider != nil {
 		r.App.guard = focus.NewGuard(provider, focus.Policy(next.EffectiveFocusPolicy()))
 	} else {

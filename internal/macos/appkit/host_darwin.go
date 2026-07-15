@@ -50,6 +50,8 @@ const (
 	ActionRunDiagnostics
 	ActionCopyDiagnostics
 	ActionQuit
+	ActionSystemWillSleep
+	ActionSystemDidWake
 )
 
 type Event struct {
@@ -65,41 +67,52 @@ type Installation struct {
 	Blocked      bool   `json:"blocked"`
 }
 
+type AudioDevice struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Default   bool   `json:"default,omitempty"`
+	Connected bool   `json:"connected"`
+}
+
 type ViewModel struct {
-	State                string `json:"state"`
-	LastError            string `json:"last_error,omitempty"`
-	LastWarning          string `json:"last_warning,omitempty"`
-	MicrophonePermission string `json:"microphone_permission,omitempty"`
-	Accessibility        string `json:"accessibility_permission,omitempty"`
-	InputMonitoring      string `json:"input_monitoring_permission,omitempty"`
-	LaunchAtLogin        bool   `json:"launch_at_login"`
-	LaunchAtLoginError   string `json:"launch_at_login_error,omitempty"`
-	HotkeyMode           string `json:"hotkey_mode,omitempty"`
-	HotkeyDescription    string `json:"hotkey_description,omitempty"`
-	HotkeyAvailable      bool   `json:"hotkey_available"`
-	AudioDeviceName      string `json:"audio_device_name,omitempty"`
-	ASREngine            string `json:"asr_engine,omitempty"`
-	ASRModel             string `json:"asr_model,omitempty"`
-	ASRProvider          string `json:"asr_provider,omitempty"`
-	ModelsReady          bool   `json:"models_ready"`
-	ModelStatus          string `json:"model_status,omitempty"`
-	PendingRestart       bool   `json:"pending_restart"`
-	InstallingModels     bool   `json:"installing_models"`
-	InstallationBlocked  bool   `json:"installation_blocked"`
-	InstallationMessage  string `json:"installation_message,omitempty"`
-	Version              string `json:"version,omitempty"`
-	Commit               string `json:"commit,omitempty"`
-	BuildNumber          string `json:"build_number,omitempty"`
-	BuildTags            string `json:"build_tags,omitempty"`
-	Architecture         string `json:"architecture,omitempty"`
-	Platform             string `json:"platform,omitempty"`
-	ConfigPath           string `json:"config_path,omitempty"`
-	LegacyConfig         bool   `json:"legacy_config"`
-	MigrationWarning     string `json:"migration_warning,omitempty"`
-	AudioBackend         string `json:"audio_backend,omitempty"`
-	InjectionBackend     string `json:"injection_backend,omitempty"`
-	FocusBackend         string `json:"focus_backend,omitempty"`
-	SocketPath           string `json:"socket_path,omitempty"`
+	State                 string        `json:"state"`
+	LastError             string        `json:"last_error,omitempty"`
+	LastWarning           string        `json:"last_warning,omitempty"`
+	MicrophonePermission  string        `json:"microphone_permission,omitempty"`
+	Accessibility         string        `json:"accessibility_permission,omitempty"`
+	InputMonitoring       string        `json:"input_monitoring_permission,omitempty"`
+	LaunchAtLogin         bool          `json:"launch_at_login"`
+	LaunchAtLoginError    string        `json:"launch_at_login_error,omitempty"`
+	HotkeyMode            string        `json:"hotkey_mode,omitempty"`
+	HotkeyDescription     string        `json:"hotkey_description,omitempty"`
+	HotkeyAvailable       bool          `json:"hotkey_available"`
+	AudioDeviceName       string        `json:"audio_device_name,omitempty"`
+	AudioDeviceID         string        `json:"audio_device_id,omitempty"`
+	SelectedAudioDevice   string        `json:"selected_audio_device_uid,omitempty"`
+	AudioDeviceControlled bool          `json:"audio_device_controlled"`
+	AudioDevices          []AudioDevice `json:"audio_devices,omitempty"`
+	ASREngine             string        `json:"asr_engine,omitempty"`
+	ASRModel              string        `json:"asr_model,omitempty"`
+	ASRProvider           string        `json:"asr_provider,omitempty"`
+	ModelsReady           bool          `json:"models_ready"`
+	ModelStatus           string        `json:"model_status,omitempty"`
+	PendingRestart        bool          `json:"pending_restart"`
+	InstallingModels      bool          `json:"installing_models"`
+	InstallationBlocked   bool          `json:"installation_blocked"`
+	InstallationMessage   string        `json:"installation_message,omitempty"`
+	Version               string        `json:"version,omitempty"`
+	Commit                string        `json:"commit,omitempty"`
+	BuildNumber           string        `json:"build_number,omitempty"`
+	BuildTags             string        `json:"build_tags,omitempty"`
+	Architecture          string        `json:"architecture,omitempty"`
+	Platform              string        `json:"platform,omitempty"`
+	ConfigPath            string        `json:"config_path,omitempty"`
+	LegacyConfig          bool          `json:"legacy_config"`
+	MigrationWarning      string        `json:"migration_warning,omitempty"`
+	AudioBackend          string        `json:"audio_backend,omitempty"`
+	InjectionBackend      string        `json:"injection_backend,omitempty"`
+	FocusBackend          string        `json:"focus_backend,omitempty"`
+	SocketPath            string        `json:"socket_path,omitempty"`
 }
 
 type eventSink struct {
