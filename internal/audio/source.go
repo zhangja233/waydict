@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"waydict/internal/apperr"
@@ -44,28 +45,37 @@ type ScriptedSource struct {
 	SampleRate int
 	Chunks     [][]float32
 	Delay      time.Duration
+	mu         sync.RWMutex
 	capturing  bool
 	index      int
 }
 
 func (s *ScriptedSource) Start(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.capturing = true
 	return nil
 }
 
 func (s *ScriptedSource) Pause(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.capturing = false
 	return nil
 }
 
 func (s *ScriptedSource) Stop(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.capturing = false
 	s.index = 0
 	return nil
 }
 
 func (s *ScriptedSource) Read(ctx context.Context, dst []float32) (int, error) {
+	s.mu.Lock()
 	if !s.capturing {
+		s.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
@@ -74,6 +84,7 @@ func (s *ScriptedSource) Read(ctx context.Context, dst []float32) (int, error) {
 		}
 	}
 	if s.index >= len(s.Chunks) {
+		s.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
@@ -84,10 +95,13 @@ func (s *ScriptedSource) Read(ctx context.Context, dst []float32) (int, error) {
 	chunk := s.Chunks[s.index]
 	s.index++
 	n := copy(dst, chunk)
+	s.mu.Unlock()
 	return n, nil
 }
 
 func (s *ScriptedSource) Stats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	rate := s.SampleRate
 	if rate == 0 {
 		rate = 16000

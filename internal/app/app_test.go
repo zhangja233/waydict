@@ -290,7 +290,7 @@ func TestStartReturnsCodedDependencyErrors(t *testing.T) {
 			name: "injector",
 			deps: Dependencies{
 				Engine:   &FakeEngine{Text: "hello", IsLoaded: true},
-				Injector: &MemoryInjector{Err: errors.New("missing executable")},
+				Injector: &MemoryInjector{err: errors.New("missing executable")},
 			},
 			want: apperr.CodeInjectorUnavailable,
 		},
@@ -474,12 +474,12 @@ func TestControlInjectTextValidatesAndDoesNotPostProcess(t *testing.T) {
 	mem := &MemoryInjector{}
 	app := New(context.Background(), cfg, Dependencies{Injector: mem})
 	resp := app.HandleControl(context.Background(), control.NewRequest("inject_text", map[string]any{"text": "hello"}))
-	if !resp.OK || len(mem.Texts) != 1 || mem.Texts[0] != "hello" {
-		t.Fatalf("response=%+v texts=%v", resp, mem.Texts)
+	if !resp.OK || len(mem.Texts()) != 1 || mem.Texts()[0] != "hello" {
+		t.Fatalf("response=%+v texts=%v", resp, mem.Texts())
 	}
 	resp = app.HandleControl(context.Background(), control.NewRequest("inject_text", map[string]any{"text": "bad\x00text"}))
-	if resp.OK || len(mem.Texts) != 1 {
-		t.Fatalf("NUL text was injected: response=%+v texts=%v", resp, mem.Texts)
+	if resp.OK || len(mem.Texts()) != 1 {
+		t.Fatalf("NUL text was injected: response=%+v texts=%v", resp, mem.Texts())
 	}
 }
 
@@ -588,8 +588,8 @@ func TestStopDiscardSuppressesPendingInjection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ASR worker did not finish")
 	}
-	if len(mem.Texts) != 0 {
-		t.Fatalf("discarded text was injected: %v", mem.Texts)
+	if len(mem.Texts()) != 0 {
+		t.Fatalf("discarded text was injected: %v", mem.Texts())
 	}
 	if got := app.Status(ctx).State; got != api.StateIdle {
 		t.Fatalf("state = %s, want idle", got)
@@ -629,13 +629,13 @@ func TestStopCommitAllowsPendingInjection(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(mem.Texts) > 0 {
+		if len(mem.Texts()) > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(mem.Texts) != 1 || mem.Texts[0] != "committed " {
-		t.Fatalf("committed text was not injected: %v", mem.Texts)
+	if len(mem.Texts()) != 1 || mem.Texts()[0] != "committed " {
+		t.Fatalf("committed text was not injected: %v", mem.Texts())
 	}
 	if got := app.Status(ctx).State; got != api.StateIdle {
 		t.Fatalf("state = %s, want idle", got)
@@ -690,13 +690,13 @@ func TestStopCommitFlushesOpenSpeechSegment(t *testing.T) {
 	}
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(mem.Texts) > 0 {
+		if len(mem.Texts()) > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(mem.Texts) != 1 || mem.Texts[0] != "flushed " {
-		t.Fatalf("flushed text was not injected: %v", mem.Texts)
+	if len(mem.Texts()) != 1 || mem.Texts()[0] != "flushed " {
+		t.Fatalf("flushed text was not injected: %v", mem.Texts())
 	}
 	if got := app.Status(ctx).State; got != api.StateIdle {
 		t.Fatalf("state = %s, want idle", got)
@@ -808,16 +808,16 @@ func TestFakeASRToInjection(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(mem.Texts) > 0 {
+		if len(mem.Texts()) > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(mem.Texts) != 1 {
-		t.Fatalf("expected injected text, got %v", mem.Texts)
+	if len(mem.Texts()) != 1 {
+		t.Fatalf("expected injected text, got %v", mem.Texts())
 	}
-	if mem.Texts[0] != "Hello, world! " {
-		t.Fatalf("postprocessed text = %q", mem.Texts[0])
+	if mem.Texts()[0] != "Hello, world! " {
+		t.Fatalf("postprocessed text = %q", mem.Texts()[0])
 	}
 }
 
@@ -836,8 +836,8 @@ func TestCaseStateAdvancesAcrossSegments(t *testing.T) {
 	app.handleSegment(ctx, job)
 
 	want := []string{"first fragment ", "jumped over. "}
-	if len(mem.Texts) != len(want) || mem.Texts[0] != want[0] || mem.Texts[1] != want[1] {
-		t.Fatalf("injected texts = %q, want %q", mem.Texts, want)
+	if len(mem.Texts()) != len(want) || mem.Texts()[0] != want[0] || mem.Texts()[1] != want[1] {
+		t.Fatalf("injected texts = %q, want %q", mem.Texts(), want)
 	}
 	app.mu.Lock()
 	atBoundary := app.caseState.AtBoundary
@@ -850,7 +850,7 @@ func TestCaseStateAdvancesAcrossSegments(t *testing.T) {
 func TestCaseStateDoesNotAdvanceOnInjectionFailure(t *testing.T) {
 	cfg := config.Defaults()
 	engine := &FakeEngine{Text: "First fragment", IsLoaded: true}
-	mem := &MemoryInjector{Err: errors.New("injection failed")}
+	mem := &MemoryInjector{err: errors.New("injection failed")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	app := New(ctx, cfg, Dependencies{Engine: engine, Injector: mem})
@@ -864,12 +864,12 @@ func TestCaseStateDoesNotAdvanceOnInjectionFailure(t *testing.T) {
 		t.Fatal("failed injection advanced case state")
 	}
 
-	mem.Err = nil
+	mem.SetError(nil)
 	engine.Text = "hello there."
 	job.segment.ID = "retry"
 	app.handleSegment(ctx, job)
-	if len(mem.Texts) != 1 || mem.Texts[0] != "Hello there. " {
-		t.Fatalf("injected texts = %q, want boundary-capitalized retry", mem.Texts)
+	if len(mem.Texts()) != 1 || mem.Texts()[0] != "Hello there. " {
+		t.Fatalf("injected texts = %q, want boundary-capitalized retry", mem.Texts())
 	}
 }
 
@@ -998,8 +998,8 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 	for time.Now().Before(deadline) {
 		st := app.Status(ctx)
 		if st.LastError != nil && st.LastError.Code == "focus_changed" {
-			if len(mem.Texts) != 0 {
-				t.Fatalf("text was injected despite focus change: %v", mem.Texts)
+			if len(mem.Texts()) != 0 {
+				t.Fatalf("text was injected despite focus change: %v", mem.Texts())
 			}
 			app.mu.Lock()
 			atBoundary := app.caseState.AtBoundary
@@ -1011,7 +1011,7 @@ func TestFocusChangeCancelsInjection(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("focus change was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
+	t.Fatalf("focus change was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts())
 }
 
 func TestStartWithOptionsRejectsExpectedFocusPIDMismatch(t *testing.T) {
@@ -1071,8 +1071,8 @@ func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
 	for time.Now().Before(deadline) {
 		st := app.Status(ctx)
 		if st.LastWarning != nil && st.LastWarning.Code == "focus_changed" {
-			if len(mem.Texts) != 1 || mem.Texts[0] != "secret " {
-				t.Fatalf("text was not injected under warn_and_type: %v", mem.Texts)
+			if len(mem.Texts()) != 1 || mem.Texts()[0] != "secret " {
+				t.Fatalf("text was not injected under warn_and_type: %v", mem.Texts())
 			}
 			if st.LastError != nil {
 				t.Fatalf("last error = %+v, want nil", st.LastError)
@@ -1081,7 +1081,7 @@ func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("focus warning was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts)
+	t.Fatalf("focus warning was not recorded; status=%+v injected=%v", app.Status(ctx), mem.Texts())
 }
 
 func TestInjectionFailureRetentionFollowsRedaction(t *testing.T) {
@@ -1102,7 +1102,7 @@ func TestInjectionFailureRetentionFollowsRedaction(t *testing.T) {
 			defer cancel()
 			app := New(ctx, cfg, Dependencies{
 				Engine:   &FakeEngine{Text: "secret", IsLoaded: true},
-				Injector: &MemoryInjector{Err: errors.New("injection failed")},
+				Injector: &MemoryInjector{err: errors.New("injection failed")},
 			})
 			app.queueSegment(asr.AudioSegment{ID: "seg", Duration: time.Second})
 			deadline := time.Now().Add(time.Second)
@@ -1190,9 +1190,19 @@ func TestCaptureErrorResetsSegmenter(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("segmenter was not reset after capture error")
 	}
-	st := app.Status(ctx)
-	if st.LastError == nil || st.LastError.Code != apperr.CodeAudioBackendUnavailable {
-		t.Fatalf("unexpected status after capture error: %+v", st.LastError)
+	// LastError is recorded on the capture path independently of the segmenter
+	// reset above; poll briefly for it to propagate (races the reset under -race).
+	deadline := time.After(time.Second)
+	for {
+		st := app.Status(ctx)
+		if st.LastError != nil && st.LastError.Code == apperr.CodeAudioBackendUnavailable {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("unexpected status after capture error: %+v", st.LastError)
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
