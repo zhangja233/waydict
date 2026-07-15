@@ -144,11 +144,13 @@ func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*R
 		if engine != nil {
 			_ = engine.Close()
 		}
+		_ = closeFocusProvider(provider)
 		return fail(normalizeError(apperr.CodeFocusUnavailable, "check focus provider", focusErr))
 	}
 	if focusErr != nil && focusRequired && provider == nil {
 		provider = runtimeUnavailableFocus{name: opts.Platform.Name, err: focusErr}
 	} else if focusErr != nil && !focusRequired {
+		_ = closeFocusProvider(provider)
 		provider = nil
 	}
 
@@ -288,7 +290,10 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.App.audioRecreateMu.Lock()
 		r.App.mu.Lock()
 		source := r.App.source
+		provider := r.App.focus
 		r.App.source = nil
+		r.App.focus = nil
+		r.App.guard = nil
 		r.App.sourceGeneration++
 		r.App.mu.Unlock()
 		if source != nil {
@@ -298,6 +303,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 			closeSource(source)
 		}
 		r.App.audioRecreateMu.Unlock()
+		if err := closeFocusProvider(provider); err != nil {
+			errs = append(errs, err)
+		}
 		if err := r.App.CloseASR(); err != nil {
 			errs = append(errs, err)
 		}
@@ -536,9 +544,11 @@ func (r *Runtime) restartRuntime(ctx context.Context, next config.Config) error 
 	}
 	if focusErr != nil && focusRequired {
 		_ = engine.Close()
+		_ = closeFocusProvider(provider)
 		return normalizeError(apperr.CodeFocusUnavailable, "restart runtime", focusErr)
 	}
 	if focusErr != nil {
+		_ = closeFocusProvider(provider)
 		provider = nil
 	}
 	var injector inject.Injector
@@ -550,6 +560,7 @@ func (r *Runtime) restartRuntime(ctx context.Context, next config.Config) error 
 	r.App.mu.Lock()
 	oldEngine := r.App.engine
 	oldSource := r.App.source
+	oldProvider := r.App.focus
 	r.App.cfg = next
 	r.App.engine = engine
 	r.App.asrResolution = resolution
@@ -602,7 +613,16 @@ func (r *Runtime) restartRuntime(ctx context.Context, next config.Config) error 
 	if oldEngine != nil {
 		_ = oldEngine.Close()
 	}
+	_ = closeFocusProvider(oldProvider)
 	return nil
+}
+
+func closeFocusProvider(provider focus.Provider) error {
+	closer, ok := provider.(interface{ Close() error })
+	if !ok {
+		return nil
+	}
+	return closer.Close()
 }
 
 func (r *Runtime) logStartup() {

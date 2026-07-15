@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/k2-fsa/sherpa-onnx-go v1.13.3
 	github.com/mewkiz/flac v1.0.13
+	github.com/rivo/uniseg v0.4.7
 	golang.org/x/sys v0.30.0
 )
 
