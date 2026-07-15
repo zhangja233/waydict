@@ -1,12 +1,13 @@
 {
-  description = "waydict — local voice dictation for wlroots Wayland (PipeWire + sherpa-onnx + wtype)";
+  description = "waydict — local voice dictation (wlroots Wayland: PipeWire + sherpa-onnx + wtype; macOS: CoreAudio + Quartz)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
+      darwinSystems = [ "aarch64-darwin" "x86_64-darwin" ];
+      forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       whisperCompat = pkgs: pkgs.whisper-cpp-vulkan.overrideAttrs (old: {
         # The cgo integration links backends directly and does not call ggml_backend_load_all.
         cmakeFlags = old.cmakeFlags ++ [
@@ -18,12 +19,28 @@
           sed -i "s|^libdir=.*|libdir=$out/lib|" "$out/lib/pkgconfig/whisper.pc"
         '';
       });
-      devShell = pkgs: { withWhisper ? true }: pkgs.mkShell {
+      # Linux dev shell (PipeWire capture + Vulkan Whisper).
+      linuxDevShell = pkgs: { withWhisper ? true }: pkgs.mkShell {
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.pipewire pkgs.go ]
           ++ pkgs.lib.optionals withWhisper [ (whisperCompat pkgs) pkgs.vulkan-loader ];
         CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
+      };
+      # macOS dev shell. Native app/ASR frameworks (AppKit, AVFoundation,
+      # CoreAudio, Metal, Accelerate) and the code-signing/notarization tools
+      # come from Xcode; the whisper.cpp submodule is built via
+      # scripts/macos/build-whisper.sh, not from nixpkgs. Nix supplies only the
+      # Go toolchain plus CMake/Ninja/pkg-config so cgo uses Xcode's clang/SDK.
+      darwinDevShell = pkgs: pkgs.mkShellNoCC {
+        packages = [ pkgs.go pkgs.pkg-config pkgs.cmake pkgs.ninja ];
+        CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
+        shellHook = ''
+          export CGO_ENABLED=1
+          export CC=/usr/bin/clang
+          export CXX=/usr/bin/clang++
+          export MACOSX_DEPLOYMENT_TARGET=13.0
+        '';
       };
       waydictPackage = pkgs: pkgs.lib.makeOverridable
         ({ withWhisper ? true }: pkgs.buildGoModule {
@@ -66,20 +83,26 @@
             homepage = "https://github.com/zhangja233/waydict";
             license = licenses.gpl3Only;
             mainProgram = "waydict";
-            platforms = systems;
+            platforms = linuxSystems;
           };
         })
         { };
     in
     {
-      packages = forAll (pkgs: rec {
+      # The nix-built package is Linux-only; the macOS app is produced by the
+      # Xcode-based `make` targets in Section 21 of the port spec.
+      packages = forSystems linuxSystems (pkgs: rec {
         default = waydictPackage pkgs;
         sherpa = default.override { withWhisper = false; };
       });
 
-      devShells = forAll (pkgs: {
-        default = devShell pkgs { };
-        sherpa = devShell pkgs { withWhisper = false; };
-      });
+      devShells =
+        (forSystems linuxSystems (pkgs: {
+          default = linuxDevShell pkgs { };
+          sherpa = linuxDevShell pkgs { withWhisper = false; };
+        }))
+        // (forSystems darwinSystems (pkgs: {
+          default = darwinDevShell pkgs;
+        }));
     };
 }
