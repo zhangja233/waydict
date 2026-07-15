@@ -1,3 +1,8 @@
 package loginitem
 
-type Service interface{}
+import "context"
+
+type Service interface {
+	Enabled(context.Context) (bool, error)
+	SetEnabled(context.Context, bool) error
+}

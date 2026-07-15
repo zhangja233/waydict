@@ -70,44 +70,47 @@ func TestPostProcessDefaults(t *testing.T) {
 
 func TestDefaultPathPrefersFlatFileThenDirForm(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
 	flat := filepath.Join(home, ".config", "waydict.toml")
 	dir := filepath.Join(home, ".config", "waydict", "config.toml")
-
-	// Neither present: preferred (flat) path is returned.
-	if got := DefaultPath(); got != flat {
-		t.Fatalf("no config: DefaultPath() = %q, want %q", got, flat)
+	paths := PathsFor("linux", PathEnvironment{HomeDir: home, TempDir: "/tmp", User: "tester"})
+	got := ConfigSearchPathsFor("linux", paths, "")
+	if len(got) != 2 || got[0] != flat || got[1] != dir {
+		t.Fatalf("ConfigSearchPathsFor() = %v", got)
 	}
-
-	// Only the directory form present: it is used (backward compatible).
 	if err := os.MkdirAll(filepath.Dir(dir), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(dir, []byte(""), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultPath(); got != dir {
-		t.Fatalf("dir only: DefaultPath() = %q, want %q", got, dir)
+	cfg, err := LoadFor("linux", paths, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Both present: the flat file wins.
+	if cfg.ActivePath() != dir {
+		t.Fatalf("active path = %q, want %q", cfg.ActivePath(), dir)
+	}
 	if err := os.WriteFile(flat, []byte(""), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultPath(); got != flat {
-		t.Fatalf("both present: DefaultPath() = %q, want %q", got, flat)
+	cfg, err = LoadFor("linux", paths, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActivePath() != flat {
+		t.Fatalf("active path = %q, want %q", cfg.ActivePath(), flat)
 	}
 }
 
 func TestDefaultPathHonorsXDGConfigHome(t *testing.T) {
 	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
+	home := t.TempDir()
+	paths := PathsFor("linux", PathEnvironment{HomeDir: home, XDGConfigHome: xdg, TempDir: "/tmp"})
 	want := []string{
 		filepath.Join(xdg, "waydict.toml"),
 		filepath.Join(xdg, "waydict", "config.toml"),
 	}
-	got := DefaultPaths()
+	got := ConfigSearchPathsFor("linux", paths, "")
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("DefaultPaths() = %v, want %v", got, want)
 	}
@@ -115,19 +118,18 @@ func TestDefaultPathHonorsXDGConfigHome(t *testing.T) {
 
 func TestDefaultModelsRootHonorsXDGDataHome(t *testing.T) {
 	xdg := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", xdg)
+	paths := PathsFor("linux", PathEnvironment{HomeDir: t.TempDir(), XDGDataHome: xdg, TempDir: "/tmp"})
 	want := filepath.Join(xdg, "waydict", "models")
-	if got := DefaultModelsRoot(); got != want {
+	if got := paths.ModelsDir; got != want {
 		t.Fatalf("DefaultModelsRoot() = %q, want %q", got, want)
 	}
 }
 
 func TestDefaultModelsRootFallsBackToHome(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_DATA_HOME", "")
+	paths := PathsFor("linux", PathEnvironment{HomeDir: home, TempDir: "/tmp"})
 	want := filepath.Join(home, ".local", "share", "waydict", "models")
-	if got := DefaultModelsRoot(); got != want {
+	if got := paths.ModelsDir; got != want {
 		t.Fatalf("DefaultModelsRoot() = %q, want %q", got, want)
 	}
 }
@@ -145,7 +147,8 @@ func TestLoadReadsFlatConfigFile(t *testing.T) {
 	if err := os.WriteFile(flat, []byte("[asr]\nnum_threads = 3\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load("")
+	paths := PathsFor("linux", PathEnvironment{HomeDir: home, TempDir: "/tmp", User: "tester"})
+	cfg, err := LoadFor("linux", paths, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,20 +159,22 @@ func TestLoadReadsFlatConfigFile(t *testing.T) {
 
 func TestLoadAppliesEngineConditionalProviderDefaults(t *testing.T) {
 	tests := []struct {
-		engine string
-		want   string
+		platform string
+		engine   string
+		want     string
 	}{
-		{engine: asr.EngineAuto, want: ""},
-		{engine: asr.EngineSherpa, want: asr.ProviderCPU},
-		{engine: asr.EngineWhisper, want: asr.ProviderVulkan},
+		{platform: "linux", engine: asr.EngineAuto, want: ""},
+		{platform: "linux", engine: asr.EngineSherpa, want: asr.ProviderCPU},
+		{platform: "linux", engine: asr.EngineWhisper, want: asr.ProviderVulkan},
+		{platform: "darwin", engine: asr.EngineWhisper, want: ""},
 	}
 	for _, tc := range tests {
-		t.Run(tc.engine, func(t *testing.T) {
+		t.Run(tc.platform+"_"+tc.engine, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
 			if err := os.WriteFile(path, []byte("[asr]\nengine = \""+tc.engine+"\"\n"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := Load(path)
+			cfg, err := LoadFor(tc.platform, testPlatformPaths(t, tc.platform), path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -182,8 +187,8 @@ func TestLoadAppliesEngineConditionalProviderDefaults(t *testing.T) {
 
 func TestWhisperModelPathUsesSharedModelsRoot(t *testing.T) {
 	xdg := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", xdg)
-	cfg := Defaults()
+	paths := PathsFor("linux", PathEnvironment{HomeDir: t.TempDir(), XDGDataHome: xdg, TempDir: "/tmp"})
+	cfg := DefaultsFor("linux", paths)
 	cfg.ASR.ModelDir = ""
 	got := cfg.WhisperModelPath()
 	want := filepath.Join(xdg, "waydict", "models", "whisper", "ggml-large-v3-turbo.bin")
@@ -211,7 +216,7 @@ require_sway = false
 focus_check = false
 socket = "/tmp/legacy.sock"
 `,
-			want: Focus{Enabled: false, Backend: "sway", Required: false, Socket: "/tmp/legacy.sock"},
+			want: Focus{Enabled: false, Backend: "auto", Policy: "cancel_on_focus_change", Required: false, Socket: "/tmp/legacy.sock"},
 		},
 		{
 			name: "generic override",
@@ -225,7 +230,7 @@ enabled = true
 required = true
 socket = "/tmp/generic.sock"
 `,
-			want: Focus{Enabled: true, Backend: "sway", Required: true, Socket: "/tmp/generic.sock"},
+			want: Focus{Enabled: true, Backend: "auto", Policy: "cancel_on_focus_change", Required: true, Socket: "/tmp/generic.sock"},
 		},
 	}
 	for _, tt := range tests {
@@ -234,7 +239,7 @@ socket = "/tmp/generic.sock"
 			if err := os.WriteFile(path, []byte(tt.contents), 0600); err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := Load(path)
+			cfg, err := LoadFor("linux", testPlatformPaths(t, "linux"), path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -317,7 +322,7 @@ func TestValidateASREngineMatrix(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Defaults()
+			cfg := DefaultsFor("linux", testPlatformPaths(t, "linux"))
 			cfg.ASR.NumThreads = 1
 			tc.edit(&cfg)
 			err := cfg.ValidateASR()
@@ -423,7 +428,7 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := Defaults()
+			cfg := DefaultsFor("linux", testPlatformPaths(t, "linux"))
 			cfg.ASR.Engine = asr.EngineSherpa
 			cfg.ASR.Provider = asr.ProviderCPU
 			cfg.ASR.NumThreads = 1
@@ -433,4 +438,268 @@ func TestValidateRejectsInvalidRuntimeBounds(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDefaultsForPlatform(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin"} {
+		t.Run(platform, func(t *testing.T) {
+			paths := testPlatformPaths(t, platform)
+			cfg := DefaultsFor(platform, paths)
+			if cfg.Daemon.Socket != paths.SocketPath || cfg.VAD.Model != paths.SileroModelPath() || cfg.Debug.SaveAudioDir != paths.DebugSegmentsDir {
+				t.Fatalf("path defaults = %#v", cfg)
+			}
+			if platform == "linux" {
+				if cfg.Audio.Backend != "pipewire" || cfg.Injection.Engine != "wtype" || cfg.Focus.Backend != "auto" || cfg.Sway.RequireSway {
+					t.Fatalf("Linux defaults = %#v", cfg)
+				}
+				return
+			}
+			if cfg.Audio.Backend != "auto" || cfg.Audio.Device != "" || cfg.Injection.Engine != "auto" || cfg.Injection.Method != "unicode" {
+				t.Fatalf("Darwin backend defaults = %#v", cfg)
+			}
+			if !cfg.Focus.Enabled || cfg.Focus.Backend != "auto" || cfg.Focus.Policy != "cancel_on_focus_change" {
+				t.Fatalf("Darwin focus defaults = %#v", cfg.Focus)
+			}
+			if !cfg.Hotkey.Enabled || cfg.Hotkey.Key != "space" || cfg.Hotkey.Mode != "hold" || len(cfg.Hotkey.Modifiers) != 3 {
+				t.Fatalf("Darwin hotkey defaults = %#v", cfg.Hotkey)
+			}
+		})
+	}
+}
+
+func TestPathsForPlatform(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	darwin := PathsFor("darwin", PathEnvironment{
+		HomeDir:       home,
+		UserConfigDir: filepath.Join(home, "Library", "Application Support"),
+		UserCacheDir:  filepath.Join(home, "Library", "Caches"),
+		UID:           501,
+	})
+	checks := map[string]string{
+		"config": darwin.ConfigFile,
+		"models": darwin.ModelsDir,
+		"state":  darwin.StateDir,
+		"log":    darwin.LogFile,
+		"cache":  darwin.CacheDir,
+		"socket": darwin.SocketPath,
+	}
+	wants := map[string]string{
+		"config": filepath.Join(home, "Library", "Application Support", "Waydict", "config.toml"),
+		"models": filepath.Join(home, "Library", "Application Support", "Waydict", "models"),
+		"state":  filepath.Join(home, "Library", "Application Support", "Waydict", "state"),
+		"log":    filepath.Join(home, "Library", "Logs", "Waydict", "waydict.log"),
+		"cache":  filepath.Join(home, "Library", "Caches", "Waydict"),
+		"socket": "/tmp/waydict-501/control.sock",
+	}
+	for name, got := range checks {
+		if got != wants[name] {
+			t.Errorf("%s path = %q, want %q", name, got, wants[name])
+		}
+	}
+}
+
+func TestDarwinConfigLookupOrder(t *testing.T) {
+	t.Setenv("WAYDICT_CONFIG", "")
+	paths := testPlatformPaths(t, "darwin")
+	override := filepath.Join(t.TempDir(), "override.toml")
+	if got := ConfigSearchPathsFor("darwin", paths, override); len(got) != 1 || got[0] != override {
+		t.Fatalf("override lookup = %v", got)
+	}
+	got := ConfigSearchPathsFor("darwin", paths, "")
+	if len(got) != 3 || got[0] != paths.ConfigFile || got[1] != paths.LegacyConfigFiles[0] || got[2] != paths.LegacyConfigFiles[1] {
+		t.Fatalf("Darwin lookup = %v", got)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.LegacyConfigFiles[0]), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.LegacyConfigFiles[0], []byte("[daemon]\nlog_level = \"debug\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadWithOptions(LoadOptions{Platform: "darwin", Paths: paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActivePath() != paths.LegacyConfigFiles[0] || !cfg.LegacyPathActive() {
+		t.Fatalf("active=%q legacy=%t", cfg.ActivePath(), cfg.LegacyPathActive())
+	}
+}
+
+func TestValidateForCapabilityMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		platform string
+		edit     func(*Config)
+		wantErr  bool
+	}{
+		{name: "darwin defaults", platform: "darwin"},
+		{name: "darwin metal", platform: "darwin", edit: func(c *Config) { c.ASR.Provider = asr.ProviderMetal }},
+		{name: "darwin rejects vulkan", platform: "darwin", edit: func(c *Config) { c.ASR.Provider = asr.ProviderVulkan }, wantErr: true},
+		{name: "darwin rejects pipewire", platform: "darwin", edit: func(c *Config) { c.Audio.Backend = "pipewire" }, wantErr: true},
+		{name: "linux accepts vulkan", platform: "linux", edit: func(c *Config) { c.ASR.Provider = asr.ProviderVulkan }},
+		{name: "linux rejects quartz", platform: "linux", edit: func(c *Config) { c.Injection.Engine = "quartz" }, wantErr: true},
+		{name: "focus none disabled", platform: "darwin", edit: func(c *Config) { c.Focus.Enabled = false; c.Focus.Backend = "none" }},
+		{name: "focus none enabled", platform: "darwin", edit: func(c *Config) { c.Focus.Backend = "none" }, wantErr: true},
+		{name: "linux hotkey enabled", platform: "linux", edit: func(c *Config) { c.Hotkey.Enabled = true }, wantErr: true},
+		{name: "sway optional", platform: "linux", edit: func(c *Config) { c.Sway.RequireSway = false }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultsFor(tc.platform, testPlatformPaths(t, tc.platform))
+			cfg.ASR.NumThreads = 1
+			if tc.edit != nil {
+				tc.edit(&cfg)
+			}
+			err := cfg.ValidateFor(CapabilitySetFor(tc.platform))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateFor() error = %v, wantErr %t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadMigratesLegacyAliases(t *testing.T) {
+	tests := []struct {
+		name     string
+		platform string
+		body     string
+		check    func(*testing.T, Config)
+	}{
+		{name: "audio target Linux", platform: "linux", body: "[audio]\ntarget_object = \"source-1\"\n", check: func(t *testing.T, cfg Config) {
+			if cfg.Audio.Device != "source-1" {
+				t.Fatalf("device = %q", cfg.Audio.Device)
+			}
+		}},
+		{name: "audio target Darwin ignored", platform: "darwin", body: "[audio]\ntarget_object = \"source-1\"\n", check: func(t *testing.T, cfg Config) {
+			if cfg.Audio.Device != "" || len(cfg.MigrationWarnings()) == 0 {
+				t.Fatalf("device=%q warnings=%v", cfg.Audio.Device, cfg.MigrationWarnings())
+			}
+		}},
+		{name: "injection focus policy", platform: "linux", body: "[injection]\nfocus_policy = \"warn_and_type\"\n", check: func(t *testing.T, cfg Config) {
+			if cfg.Focus.Policy != "warn_and_type" {
+				t.Fatalf("policy = %q", cfg.Focus.Policy)
+			}
+		}},
+		{name: "sway focus check", platform: "linux", body: "[sway]\nfocus_check = false\n", check: func(t *testing.T, cfg Config) {
+			if cfg.Focus.Enabled {
+				t.Fatal("focus remained enabled")
+			}
+		}},
+		{name: "sway required", platform: "linux", body: "[sway]\nrequire_sway = true\n", check: func(t *testing.T, cfg Config) {
+			if cfg.Focus.Backend != "sway" {
+				t.Fatalf("backend = %q", cfg.Focus.Backend)
+			}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadFor(tc.platform, testPlatformPaths(t, tc.platform), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, cfg)
+		})
+	}
+}
+
+func TestMigrationPrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `[audio]
+device = "preferred"
+target_object = "legacy"
+
+[injection]
+focus_policy = "warn_and_type"
+
+[focus]
+enabled = true
+policy = "type_current"
+`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFor("linux", testPlatformPaths(t, "linux"), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Audio.Device != "preferred" || cfg.Focus.Policy != "type_current" {
+		t.Fatalf("migration overrode generic fields: audio=%q policy=%q", cfg.Audio.Device, cfg.Focus.Policy)
+	}
+	if !cfg.IsExplicit("audio.device") || !cfg.IsExplicit("focus.policy") {
+		t.Fatal("explicit TOML fields were not recorded")
+	}
+}
+
+func TestEnsureConfigForEditing(t *testing.T) {
+	paths := testPlatformPaths(t, "darwin")
+	paths.ConfigDir = filepath.Join(t.TempDir(), "Waydict")
+	paths.ConfigFile = filepath.Join(paths.ConfigDir, "config.toml")
+	path, created, err := EnsureConfigForEditing("", paths, SampleConfigFor("darwin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != paths.ConfigFile || !created {
+		t.Fatalf("path=%q created=%t", path, created)
+	}
+	for _, item := range []struct {
+		path string
+		mode os.FileMode
+	}{{paths.ConfigDir, 0700}, {paths.ConfigFile, 0600}} {
+		info, err := os.Stat(item.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != item.mode {
+			t.Fatalf("%s mode = %o", item.path, info.Mode().Perm())
+		}
+	}
+	if err := os.WriteFile(paths.ConfigFile, []byte("broken = ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, created, err = EnsureConfigForEditing("", paths, SampleConfigFor("darwin"))
+	if err != nil || created {
+		t.Fatalf("existing config: created=%t err=%v", created, err)
+	}
+	contents, err := os.ReadFile(paths.ConfigFile)
+	if err != nil || string(contents) != "broken = [" {
+		t.Fatalf("existing config was overwritten: %q err=%v", contents, err)
+	}
+}
+
+func TestMacOSSampleConfigGolden(t *testing.T) {
+	want, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample-config-macos.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(SampleConfigFor("darwin")) != string(want) {
+		t.Fatal("embedded macOS sample differs from testdata/sample-config-macos.toml")
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFor("darwin", testPlatformPaths(t, "darwin"), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ValidateFor(CapabilitySetFor("darwin")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testPlatformPaths(t *testing.T, platform string) PlatformPaths {
+	t.Helper()
+	home := t.TempDir()
+	return PathsFor(platform, PathEnvironment{
+		HomeDir:       home,
+		UserConfigDir: filepath.Join(home, "Library", "Application Support"),
+		UserCacheDir:  filepath.Join(home, "Library", "Caches"),
+		TempDir:       "/tmp",
+		User:          "tester",
+		UID:           501,
+		SwaySocket:    "/tmp/sway.sock",
+	})
 }

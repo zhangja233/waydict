@@ -2,80 +2,65 @@ package config
 
 import (
 	"os"
-	"path/filepath"
+	"runtime"
 
 	"waydict/internal/asr"
 )
 
-const (
-	DefaultModelName = "parakeet-unified-en-0.6b-fp32"
-)
+const DefaultModelName = "parakeet-unified-en-0.6b-fp32"
 
-// DefaultPaths lists the config locations searched when --config is not given,
-// in precedence order: the flat waydict.toml wins over the directory-form
-// waydict/config.toml. XDG_CONFIG_HOME overrides ~/.config for both.
 func DefaultPaths() []string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".config")
+	paths := CurrentPlatformPaths()
+	override := ""
+	if runtime.GOOS == "darwin" {
+		override = os.Getenv("WAYDICT_CONFIG")
 	}
-	return []string{
-		filepath.Join(dir, "waydict.toml"),
-		filepath.Join(dir, "waydict", "config.toml"),
-	}
+	return ConfigSearchPathsFor(runtime.GOOS, paths, override)
 }
 
-// DefaultPath returns the first config location that exists, or the preferred
-// one (flat waydict.toml) when none do.
 func DefaultPath() string {
 	paths := DefaultPaths()
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
 		}
+	}
+	if len(paths) == 0 {
+		return ""
 	}
 	return paths[0]
 }
 
 func DefaultModelsRoot() string {
-	dir := os.Getenv("XDG_DATA_HOME")
-	if dir != "" {
-		return filepath.Join(dir, "waydict", "models")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "waydict", "models")
+	return CurrentPlatformPaths().ModelsDir
 }
 
 func Defaults() Config {
-	home, _ := os.UserHomeDir()
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		runtimeDir = filepath.Join(os.TempDir(), "waydict-"+userName())
-	}
-	modelRoot := DefaultModelsRoot()
-	stateRoot := filepath.Join(home, ".local", "state", "waydict")
-	return Config{
+	return DefaultsFor(runtime.GOOS, CurrentPlatformPaths())
+}
+
+// DefaultsFor has no process or filesystem dependencies.
+func DefaultsFor(platform string, paths PlatformPaths) Config {
+	cfg := Config{
 		Daemon: Daemon{
-			Socket:                      filepath.Join(runtimeDir, "waydict", "waydict.sock"),
+			Socket:                      paths.SocketPath,
 			PreloadModel:                true,
 			AutoStopAfterSilenceSeconds: 120,
 			RedactTranscriptsInLogs:     true,
 			LogLevel:                    "info",
 		},
 		Audio: Audio{
-			Backend:      "pipewire",
-			SampleRate:   16000,
-			Channels:     1,
-			Format:       "f32le",
-			QuantumMS:    20,
-			RingSeconds:  8,
-			TargetObject: "",
-			StartPaused:  true,
+			Backend:     "pipewire",
+			SampleRate:  16000,
+			Channels:    1,
+			Format:      "f32le",
+			QuantumMS:   20,
+			RingSeconds: 8,
+			StartPaused: true,
 		},
 		VAD: VAD{
 			Engine:            "silero",
-			Model:             filepath.Join(modelRoot, "silero_vad.onnx"),
+			Model:             paths.SileroModelPath(),
 			WindowSize:        512,
 			Threshold:         0.35,
 			NegativeThreshold: 0.15,
@@ -95,7 +80,7 @@ func Defaults() Config {
 			BlankPenalty:   0,
 			WhisperModel:   "ggml-large-v3-turbo",
 			GPUDevice:      0,
-			ModelDir:       filepath.Join(modelRoot, DefaultModelName),
+			ModelDir:       paths.ParakeetModelPath(),
 			Encoder:        "encoder.onnx",
 			Decoder:        "decoder.onnx",
 			Joiner:         "joiner.onnx",
@@ -103,17 +88,24 @@ func Defaults() Config {
 		},
 		Injection: Injection{
 			Engine:      "wtype",
+			Method:      "unicode",
 			WtypePath:   "wtype",
 			KeyDelayMS:  1,
 			TimeoutMS:   10000,
 			AppendSpace: true,
-			FocusPolicy: "cancel_on_focus_change",
 		},
 		Focus: Focus{
 			Enabled:  true,
-			Backend:  "sway",
-			Required: true,
-			Socket:   os.Getenv("SWAYSOCK"),
+			Backend:  "auto",
+			Policy:   "cancel_on_focus_change",
+			Required: false,
+			Socket:   paths.SwaySocket,
+		},
+		Hotkey: Hotkey{
+			Enabled: false,
+			Key:     "space",
+			KeyCode: -1,
+			Mode:    "hold",
 		},
 		PostProcess: PostProcess{
 			TrimLeading:              true,
@@ -123,21 +115,27 @@ func Defaults() Config {
 			SmartCase:                true,
 		},
 		Sway: Sway{
-			RequireSway: true,
-			Socket:      os.Getenv("SWAYSOCK"),
+			RequireSway: false,
+			Socket:      paths.SwaySocket,
 			FocusCheck:  true,
 		},
 		Debug: Debug{
 			SaveAudioSegments: false,
-			SaveAudioDir:      filepath.Join(stateRoot, "segments"),
+			SaveAudioDir:      paths.DebugSegmentsDir,
 			LogTranscripts:    false,
 		},
 	}
-}
-
-func userName() string {
-	if u := os.Getenv("USER"); u != "" {
-		return u
+	if platform == "darwin" {
+		cfg.Audio.Backend = "auto"
+		cfg.Injection.Engine = "auto"
+		cfg.Injection.WtypePath = ""
+		cfg.Focus.Backend = "auto"
+		cfg.Focus.Socket = ""
+		cfg.Hotkey.Enabled = true
+		cfg.Hotkey.Modifiers = []string{"control", "shift", "command"}
+		cfg.Sway = Sway{}
 	}
-	return "user"
+	cfg.source.platform = platform
+	cfg.source.paths = paths
+	return cfg
 }

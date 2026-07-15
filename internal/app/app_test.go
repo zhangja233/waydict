@@ -18,6 +18,8 @@ import (
 	"waydict/internal/control"
 	"waydict/internal/focus"
 	"waydict/internal/inject"
+	"waydict/internal/permissions"
+	"waydict/internal/preferences"
 	"waydict/internal/vad"
 	"waydict/pkg/api"
 )
@@ -351,7 +353,7 @@ func TestReloadConfigRejectsRuntimeChanges(t *testing.T) {
 	cfg.ASR.NumThreads = 1
 	next := cfg
 	next.ASR.Engine = asr.EngineWhisper
-	next.ASR.Provider = asr.ProviderVulkan
+	next.ASR.Provider = asr.ProviderMetal
 	next.ASR.ModelDir = filepath.Join(t.TempDir(), "other-model")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -362,8 +364,12 @@ func TestReloadConfigRejectsRuntimeChanges(t *testing.T) {
 		ConfigReloader: func(context.Context) (config.Config, error) { return next, nil },
 	})
 	resp := app.HandleControl(ctx, control.NewRequest("reload_config", nil))
-	if resp.OK || resp.Error == nil || resp.Error.Code != "restart_required" {
-		t.Fatalf("response error = %+v, want restart_required", resp.Error)
+	if !resp.OK {
+		t.Fatalf("reload failed: %+v", resp.Error)
+	}
+	status := app.Status(ctx)
+	if !status.PendingRestart || status.LastWarning == nil || status.LastWarning.Code != "restart_required" {
+		t.Fatalf("status = %+v, want pending restart warning", status)
 	}
 	if app.engine != engine || app.Status(ctx).ASR.ResolvedEngine != asr.EngineSherpa {
 		t.Fatal("reload swapped the resolved ASR engine")
@@ -390,6 +396,92 @@ func TestReloadConfigRejectsActiveCapture(t *testing.T) {
 		t.Fatalf("response error = %+v, want busy", resp.Error)
 	}
 }
+
+func TestControlRejectsAudioPreferenceControlledByConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[audio]\ndevice = \"configured\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	paths := config.PathsFor("darwin", config.PathEnvironment{HomeDir: t.TempDir(), UserConfigDir: t.TempDir(), UserCacheDir: t.TempDir(), UID: 501})
+	cfg, err := config.LoadFor("darwin", paths, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := New(context.Background(), cfg, Dependencies{Preferences: preferences.NewMemoryStore()})
+	resp := app.HandleControl(context.Background(), control.NewRequest("set_audio_device", map[string]any{"id": "other"}))
+	if resp.OK || resp.Error == nil || resp.Error.Code != apperr.CodeControlledByConfig {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestControlSetAudioDeviceUsesPreferenceAndRecreatesSource(t *testing.T) {
+	cfg := config.DefaultsFor("darwin", config.PlatformPaths{SocketPath: filepath.Join(t.TempDir(), "control.sock")})
+	cfg.Focus.Enabled = false
+	store := preferences.NewMemoryStore()
+	selected := ""
+	app := New(context.Background(), cfg, Dependencies{
+		Preferences:   store,
+		DeviceManager: staticDeviceManager{{ID: "device-1", Name: "Mic", Connected: true}},
+		AudioSourceFactory: func(audioCfg config.Audio) (audio.Source, error) {
+			selected = audioCfg.Device
+			return &audio.ScriptedSource{SampleRate: 16000}, nil
+		},
+	})
+	resp := app.HandleControl(context.Background(), control.NewRequest("set_audio_device", map[string]any{"id": "device-1"}))
+	if !resp.OK {
+		t.Fatalf("response = %+v", resp)
+	}
+	if selected != "device-1" || store.Values[preferences.KeySelectedAudioDeviceUID] != "device-1" {
+		t.Fatalf("selected=%q preferences=%v", selected, store.Values)
+	}
+}
+
+func TestControlInjectTextValidatesAndDoesNotPostProcess(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Focus.Enabled = false
+	mem := &MemoryInjector{}
+	app := New(context.Background(), cfg, Dependencies{Injector: mem})
+	resp := app.HandleControl(context.Background(), control.NewRequest("inject_text", map[string]any{"text": "hello"}))
+	if !resp.OK || len(mem.Texts) != 1 || mem.Texts[0] != "hello" {
+		t.Fatalf("response=%+v texts=%v", resp, mem.Texts)
+	}
+	resp = app.HandleControl(context.Background(), control.NewRequest("inject_text", map[string]any{"text": "bad\x00text"}))
+	if resp.OK || len(mem.Texts) != 1 {
+		t.Fatalf("NUL text was injected: response=%+v texts=%v", resp, mem.Texts)
+	}
+}
+
+func TestControlPermissionsUsesPlatformSource(t *testing.T) {
+	source := fakePermissionSource{snapshot: permissions.Snapshot{
+		Microphone:    permissions.StateGranted,
+		Accessibility: permissions.StateDenied,
+	}}
+	app := New(context.Background(), config.Defaults(), Dependencies{PermissionSource: source})
+	resp := app.HandleControl(context.Background(), control.NewRequest("permissions", nil))
+	if !resp.OK || resp.Data["microphone"] != permissions.StateGranted || resp.Status.Permissions == nil {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+type staticDeviceManager []audio.Device
+
+func (m staticDeviceManager) Devices(context.Context) ([]audio.Device, error) {
+	return append([]audio.Device(nil), m...), nil
+}
+
+type fakePermissionSource struct {
+	snapshot permissions.Snapshot
+}
+
+func (f fakePermissionSource) Snapshot(context.Context) (permissions.Snapshot, error) {
+	return f.snapshot, nil
+}
+
+func (f fakePermissionSource) Request(_ context.Context, kind permissions.Kind) (permissions.State, error) {
+	return permissions.StateGranted, nil
+}
+
+func (f fakePermissionSource) OpenSettings(context.Context, permissions.Kind) error { return nil }
 
 func TestStopDiscardSuppressesPendingInjection(t *testing.T) {
 	cfg := config.Defaults()
@@ -866,7 +958,7 @@ func TestFocusWarnAndTypeRecordsWarning(t *testing.T) {
 	provider := &appFocusProvider{sameIDs: []string{"two", "two"}}
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
-	cfg.Injection.FocusPolicy = "warn_and_type"
+	cfg.Focus.Policy = "warn_and_type"
 	cfg.VAD.Engine = "energy"
 	cfg.VAD.Threshold = 0.01
 	cfg.VAD.MinSpeechMS = 20

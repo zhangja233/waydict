@@ -26,7 +26,11 @@ type Capture struct {
 }
 
 func New(cfg config.Audio) (*Capture, error) {
-	target := C.CString(cfg.TargetObject)
+	device := cfg.Device
+	if device == "" {
+		device = cfg.TargetObject
+	}
+	target := C.CString(device)
 	defer C.free(unsafe.Pointer(target))
 	c := C.sv_pw_config{
 		target_object:  target,
@@ -92,13 +96,17 @@ func (c *Capture) Read(ctx context.Context, dst []float32) (int, error) {
 func (c *Capture) Stats() audio.Stats {
 	var st C.sv_pw_stats
 	C.sv_pw_capture_stats(c.ptr, &st)
+	device := c.cfg.Device
+	if device == "" {
+		device = c.cfg.TargetObject
+	}
 	return audio.Stats{
 		Backend:      "pipewire",
 		SampleRate:   int(st.sample_rate),
 		LevelDBFS:    float64(st.level_dbfs),
 		Overruns:     uint64(st.overruns),
 		Capturing:    st.capturing != 0,
-		DeviceID:     c.cfg.TargetObject,
+		DeviceID:     device,
 		InputLatency: time.Duration(c.cfg.QuantumMS) * time.Millisecond,
 	}
 }

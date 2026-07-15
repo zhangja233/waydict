@@ -28,30 +28,60 @@ type ErrorInfo struct {
 }
 
 type Status struct {
-	State                  State           `json:"state"`
-	Mode                   *Mode           `json:"mode"`
-	Audio                  AudioStatus     `json:"audio"`
-	VAD                    VADStatus       `json:"vad"`
-	ASR                    ASRStatus       `json:"asr"`
-	Injection              InjectionStatus `json:"injection"`
-	Focus                  FocusStatus     `json:"focus"`
-	LastError              *ErrorInfo      `json:"last_error"`
-	LastWarning            *ErrorInfo      `json:"last_warning,omitempty"`
-	LastTranscriptRedacted bool            `json:"last_transcript_redacted"`
-	LastUninjectedText     string          `json:"last_uninjected_text,omitempty"`
-	LastTranscript         string          `json:"last_transcript,omitempty"`
-	UptimeSeconds          float64         `json:"uptime_seconds,omitempty"`
+	State                  State             `json:"state"`
+	Mode                   *Mode             `json:"mode"`
+	Audio                  AudioStatus       `json:"audio"`
+	VAD                    VADStatus         `json:"vad"`
+	ASR                    ASRStatus         `json:"asr"`
+	Injection              InjectionStatus   `json:"injection"`
+	Focus                  FocusStatus       `json:"focus"`
+	LastError              *ErrorInfo        `json:"last_error"`
+	LastWarning            *ErrorInfo        `json:"last_warning,omitempty"`
+	LastTranscriptRedacted bool              `json:"last_transcript_redacted"`
+	LastUninjectedText     string            `json:"last_uninjected_text,omitempty"`
+	LastTranscript         string            `json:"last_transcript,omitempty"`
+	UptimeSeconds          float64           `json:"uptime_seconds,omitempty"`
+	Platform               *PlatformStatus   `json:"platform,omitempty"`
+	Permissions            *PermissionStatus `json:"permissions,omitempty"`
+	Hotkey                 *HotkeyStatus     `json:"hotkey,omitempty"`
+	PendingRestart         bool              `json:"pending_restart,omitempty"`
+}
+
+type PlatformStatus struct {
+	OS                string   `json:"os"`
+	Host              string   `json:"host"`
+	Version           string   `json:"version,omitempty"`
+	Arch              string   `json:"arch,omitempty"`
+	ConfigPath        string   `json:"config_path,omitempty"`
+	LegacyConfig      bool     `json:"legacy_config,omitempty"`
+	MigrationWarnings []string `json:"migration_warnings,omitempty"`
+}
+
+type PermissionStatus struct {
+	Microphone      string `json:"microphone,omitempty"`
+	Accessibility   string `json:"accessibility,omitempty"`
+	InputMonitoring string `json:"input_monitoring,omitempty"`
+}
+
+type HotkeyStatus struct {
+	Enabled   bool     `json:"enabled"`
+	Available bool     `json:"available"`
+	Key       string   `json:"key,omitempty"`
+	Modifiers []string `json:"modifiers,omitempty"`
+	Mode      Mode     `json:"mode,omitempty"`
+	LastError string   `json:"last_error,omitempty"`
 }
 
 type AudioStatus struct {
-	Backend      string        `json:"backend"`
-	SampleRate   int           `json:"sample_rate"`
-	LevelDBFS    float64       `json:"level_dbfs"`
-	Overruns     uint64        `json:"overruns"`
-	Capturing    bool          `json:"capturing"`
-	DeviceID     string        `json:"device_id,omitempty"`
-	DeviceName   string        `json:"device_name,omitempty"`
-	InputLatency time.Duration `json:"input_latency,omitempty"`
+	Backend        string        `json:"backend"`
+	SampleRate     int           `json:"sample_rate"`
+	LevelDBFS      float64       `json:"level_dbfs"`
+	Overruns       uint64        `json:"overruns"`
+	Capturing      bool          `json:"capturing"`
+	DeviceID       string        `json:"device_id,omitempty"`
+	DeviceName     string        `json:"device_name,omitempty"`
+	InputLatency   time.Duration `json:"input_latency,omitempty"`
+	InputLatencyMS float64       `json:"input_latency_ms,omitempty"`
 }
 
 // VADStatus reports the voice-activity-detection engine actually in use. It can

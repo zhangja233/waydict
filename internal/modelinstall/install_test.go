@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"waydict/internal/config"
 	"waydict/internal/model"
 )
 
@@ -137,7 +138,7 @@ func TestModelRootUsesConfiguredDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(xdg, "waydict", "models")
+	want := config.DefaultModelsRoot()
 	if got != want {
 		t.Fatalf("modelRoot() = %q, want %q", got, want)
 	}

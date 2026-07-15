@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -17,43 +18,89 @@ import (
 	"waydict/internal/config"
 	"waydict/internal/control"
 	"waydict/internal/focus"
+	"waydict/internal/hotkey"
 	"waydict/internal/inject"
+	"waydict/internal/loginitem"
+	"waydict/internal/permissions"
+	"waydict/internal/preferences"
 	"waydict/internal/vad"
 	"waydict/pkg/api"
 )
 
 type Dependencies struct {
-	Source        audio.Source
-	SourceFactory func() (audio.Source, error)
+	Source             audio.Source
+	SourceFactory      func() (audio.Source, error)
+	AudioSourceFactory func(config.Audio) (audio.Source, error)
 	// ModelChecker validates model files for the given resolved engine.
-	ModelChecker   func(engine string) error
-	ConfigReloader func(context.Context) (config.Config, error)
-	Segmenter      vad.Segmenter
-	Engine         asr.Engine
-	ASRResolution  asr.Resolution
-	ASRFallback    func() (asr.Engine, asr.Resolution, error)
-	Injector       inject.Injector
-	Focus          focus.Provider
-	Logger         *slog.Logger
-	Shutdown       func()
+	ModelChecker     func(engine string) error
+	ConfigReloader   func(context.Context) (config.Config, error)
+	ConfigValidator  func(config.Config) error
+	Segmenter        vad.Segmenter
+	Engine           asr.Engine
+	ASRResolution    asr.Resolution
+	ASRFallback      func() (asr.Engine, asr.Resolution, error)
+	Injector         inject.Injector
+	Focus            focus.Provider
+	Capabilities     ControlCapabilities
+	PermissionSource permissions.Source
+	DeviceManager    audio.DeviceManager
+	Preferences      preferences.Store
+	Hotkey           hotkey.Service
+	LoginItem        loginitem.Service
+	HostActions      HostActions
+	SetLogLevel      func(string)
+	Logger           *slog.Logger
+	Shutdown         func()
+}
+
+type ControlCapabilities struct {
+	Platform         string
+	Host             string
+	AudioBackends    []string
+	InjectionEngines []string
+	FocusBackends    []string
+	WhisperProviders []string
+	SherpaProviders  []string
+	HotkeyAvailable  bool
+}
+
+type HostActions struct {
+	Activate              func(context.Context) error
+	RestartRuntime        func(context.Context, config.Config) error
+	InstallRequiredModels func(context.Context) error
+	RevealModels          func(context.Context) error
+	OpenConfig            func(context.Context) error
+	OpenLog               func(context.Context) error
+	RunDiagnostics        func(context.Context) (map[string]any, error)
+	CopyDiagnostics       func(context.Context) error
 }
 
 type App struct {
-	cfg            config.Config
-	source         audio.Source
-	sourceFactory  func() (audio.Source, error)
-	modelChecker   func(engine string) error
-	configReloader func(context.Context) (config.Config, error)
-	segmenter      vad.Segmenter
-	engine         asr.Engine
-	asrResolution  asr.Resolution
-	asrFallback    func() (asr.Engine, asr.Resolution, error)
-	injector       inject.Injector
-	guard          *focus.Guard
-	focus          focus.Provider
-	logger         *slog.Logger
-	post           inject.PostProcessor
-	caseState      inject.CaseState
+	cfg                config.Config
+	source             audio.Source
+	sourceFactory      func() (audio.Source, error)
+	audioSourceFactory func(config.Audio) (audio.Source, error)
+	modelChecker       func(engine string) error
+	configReloader     func(context.Context) (config.Config, error)
+	configValidator    func(config.Config) error
+	segmenter          vad.Segmenter
+	engine             asr.Engine
+	asrResolution      asr.Resolution
+	asrFallback        func() (asr.Engine, asr.Resolution, error)
+	injector           inject.Injector
+	guard              *focus.Guard
+	focus              focus.Provider
+	capabilities       ControlCapabilities
+	permissionSource   permissions.Source
+	deviceManager      audio.DeviceManager
+	preferences        preferences.Store
+	hotkey             hotkey.Service
+	loginItem          loginitem.Service
+	hostActions        HostActions
+	setLogLevel        func(string)
+	logger             *slog.Logger
+	post               inject.PostProcessor
+	caseState          inject.CaseState
 
 	mu             sync.Mutex
 	segMu          sync.Mutex // serializes segmenter access (silero VAD is not concurrency-safe)
@@ -73,6 +120,7 @@ type App struct {
 	pendingSession map[uint64]int
 	deferred       map[uint64]*deferredSession
 	segmentOpen    bool
+	pendingConfig  *config.Config
 }
 
 type segmentJob struct {
@@ -87,30 +135,40 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		resolution.Provider = cfg.ASR.Provider
 	}
 	a := &App{
-		cfg:            cfg,
-		source:         deps.Source,
-		sourceFactory:  deps.SourceFactory,
-		modelChecker:   deps.ModelChecker,
-		configReloader: deps.ConfigReloader,
-		segmenter:      deps.Segmenter,
-		engine:         deps.Engine,
-		asrResolution:  resolution,
-		asrFallback:    deps.ASRFallback,
-		injector:       deps.Injector,
-		focus:          deps.Focus,
-		logger:         deps.Logger,
-		post:           inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
-		caseState:      inject.CaseState{AtBoundary: true},
-		startedAt:      time.Now(),
-		rootCtx:        ctx,
-		asrQueue:       make(chan segmentJob, 8),
-		shutdown:       deps.Shutdown,
-		discarded:      make(map[uint64]struct{}),
-		pendingSession: make(map[uint64]int),
-		deferred:       make(map[uint64]*deferredSession),
+		cfg:                cfg,
+		source:             deps.Source,
+		sourceFactory:      deps.SourceFactory,
+		audioSourceFactory: deps.AudioSourceFactory,
+		modelChecker:       deps.ModelChecker,
+		configReloader:     deps.ConfigReloader,
+		configValidator:    deps.ConfigValidator,
+		segmenter:          deps.Segmenter,
+		engine:             deps.Engine,
+		asrResolution:      resolution,
+		asrFallback:        deps.ASRFallback,
+		injector:           deps.Injector,
+		focus:              deps.Focus,
+		capabilities:       deps.Capabilities,
+		permissionSource:   deps.PermissionSource,
+		deviceManager:      deps.DeviceManager,
+		preferences:        deps.Preferences,
+		hotkey:             deps.Hotkey,
+		loginItem:          deps.LoginItem,
+		hostActions:        deps.HostActions,
+		setLogLevel:        deps.SetLogLevel,
+		logger:             deps.Logger,
+		post:               inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
+		caseState:          inject.CaseState{AtBoundary: true},
+		startedAt:          time.Now(),
+		rootCtx:            ctx,
+		asrQueue:           make(chan segmentJob, 8),
+		shutdown:           deps.Shutdown,
+		discarded:          make(map[uint64]struct{}),
+		pendingSession:     make(map[uint64]int),
+		deferred:           make(map[uint64]*deferredSession),
 	}
 	if deps.Focus != nil {
-		a.guard = focus.NewGuard(deps.Focus, focus.Policy(cfg.Injection.FocusPolicy))
+		a.guard = focus.NewGuard(deps.Focus, focus.Policy(cfg.EffectiveFocusPolicy()))
 	}
 	vadEngine := ""
 	if deps.Segmenter != nil {
@@ -144,12 +202,31 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		},
 		LastTranscriptRedacted: cfg.Daemon.RedactTranscriptsInLogs,
 	}
+	if deps.Capabilities.Platform != "" || deps.Capabilities.Host != "" {
+		a.status.Platform = &api.PlatformStatus{
+			OS:                deps.Capabilities.Platform,
+			Host:              deps.Capabilities.Host,
+			Arch:              runtime.GOARCH,
+			ConfigPath:        cfg.ActivePath(),
+			LegacyConfig:      cfg.LegacyPathActive(),
+			MigrationWarnings: cfg.MigrationWarnings(),
+		}
+	}
+	if deps.Hotkey != nil || cfg.Hotkey.Enabled {
+		a.status.Hotkey = &api.HotkeyStatus{
+			Enabled:   cfg.Hotkey.Enabled,
+			Available: deps.Hotkey != nil,
+			Key:       cfg.Hotkey.Key,
+			Modifiers: append([]string(nil), cfg.Hotkey.Modifiers...),
+			Mode:      api.Mode(cfg.Hotkey.Mode),
+		}
+	}
 	go a.asrWorker(ctx)
 	return a
 }
 
 func (a *App) HandleControl(ctx context.Context, req control.Request) control.Response {
-	if req.Command != "status" {
+	if req.Command != "status" && req.Command != "inject_text" {
 		a.logDebug("control request", "command", req.Command, "request_id", req.ID)
 	}
 	switch req.Command {
@@ -207,6 +284,9 @@ func (a *App) HandleControl(ctx context.Context, req control.Request) control.Re
 		}
 		return control.OK(req.ID, a.Status(ctx))
 	default:
+		if response, handled := a.handleExtendedControl(ctx, req); handled {
+			return response
+		}
 		return control.Fail(req.ID, "usage", "unsupported command", a.Status(ctx))
 	}
 }
@@ -462,7 +542,11 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 	if err != nil {
 		return withCode("config_invalid", err)
 	}
-	if err := cfg.Validate(); err != nil {
+	validate := a.configValidator
+	if validate == nil {
+		validate = func(cfg config.Config) error { return cfg.Validate() }
+	}
+	if err := validate(cfg); err != nil {
 		return withCode("config_invalid", err)
 	}
 
@@ -471,24 +555,71 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 		a.mu.Unlock()
 		return withCode("busy", fmt.Errorf("cannot reload config while dictation is active"))
 	}
-	if err := reloadRequiresRestart(a.cfg, cfg); err != nil {
-		a.mu.Unlock()
-		return withCode("restart_required", err)
+	old := a.cfg
+	restartErr := reloadRequiresRestart(old, cfg)
+	active := cfg
+	if restartErr != nil {
+		active = liveConfig(old, cfg)
+		pending := cfg
+		a.pendingConfig = &pending
+		a.status.PendingRestart = true
+		a.status.LastWarning = &api.ErrorInfo{Code: "restart_required", Message: restartErr.Error()}
+	} else {
+		a.pendingConfig = nil
+		a.status.PendingRestart = false
+		if a.status.LastWarning != nil && a.status.LastWarning.Code == "restart_required" {
+			a.status.LastWarning = nil
+		}
 	}
-	a.cfg = cfg
-	a.post = inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace)
-	a.status.LastTranscriptRedacted = cfg.Daemon.RedactTranscriptsInLogs
-	if cfg.Daemon.RedactTranscriptsInLogs {
+	a.cfg = active
+	a.post = inject.NewPostProcessor(active.PostProcess, active.Injection.AppendSpace)
+	if a.focus != nil {
+		a.guard = focus.NewGuard(a.focus, focus.Policy(active.EffectiveFocusPolicy()))
+	}
+	a.status.LastTranscriptRedacted = active.Daemon.RedactTranscriptsInLogs
+	if active.Daemon.RedactTranscriptsInLogs {
 		a.status.LastTranscript = ""
 		a.status.LastUninjectedText = ""
 	}
+	if a.status.Platform != nil {
+		a.status.Platform.ConfigPath = cfg.ActivePath()
+		a.status.Platform.LegacyConfig = cfg.LegacyPathActive()
+		a.status.Platform.MigrationWarnings = cfg.MigrationWarnings()
+	}
+	if a.status.Hotkey != nil {
+		a.status.Hotkey.Enabled = active.Hotkey.Enabled
+		a.status.Hotkey.Key = active.Hotkey.Key
+		a.status.Hotkey.Modifiers = append([]string(nil), active.Hotkey.Modifiers...)
+		a.status.Hotkey.Mode = api.Mode(active.Hotkey.Mode)
+	}
+	audioChanged := old.Audio.Device != active.Audio.Device
+	hotkeyChanged := !reflect.DeepEqual(old.Hotkey, active.Hotkey)
+	logLevelChanged := old.Daemon.LogLevel != active.Daemon.LogLevel
 	a.mu.Unlock()
+	if logLevelChanged && a.setLogLevel != nil {
+		a.setLogLevel(active.Daemon.LogLevel)
+	}
+	if audioChanged && (a.audioSourceFactory != nil || a.sourceFactory != nil) {
+		if err := a.recreateSource(ctx); err != nil {
+			return err
+		}
+	}
+	if hotkeyChanged && active.Hotkey.Enabled && a.hotkey != nil {
+		binding, err := hotkeyBinding(active.Hotkey)
+		if err != nil {
+			return err
+		}
+		if err := a.hotkey.Rebind(ctx, binding); err != nil {
+			return err
+		}
+	}
 	a.logInfo("config reloaded",
-		"log_level", cfg.Daemon.LogLevel,
-		"redacted_transcripts", cfg.Daemon.RedactTranscriptsInLogs,
-		"auto_stop_seconds", cfg.Daemon.AutoStopAfterSilenceSeconds,
-		"append_space", cfg.Injection.AppendSpace,
-		"debug_save_audio", cfg.Debug.SaveAudioSegments)
+		"log_level", active.Daemon.LogLevel,
+		"redacted_transcripts", active.Daemon.RedactTranscriptsInLogs,
+		"auto_stop_seconds", active.Daemon.AutoStopAfterSilenceSeconds,
+		"append_space", active.Injection.AppendSpace,
+		"debug_save_audio", active.Debug.SaveAudioSegments,
+		"pending_restart", restartErr != nil)
 	return nil
 }
 
@@ -502,7 +633,13 @@ func reloadRequiresRestart(old, next config.Config) error {
 		return fmt.Errorf("daemon socket or preload changes require restart")
 	}
 	if old.Audio != next.Audio {
-		return fmt.Errorf("audio changes require restart")
+		oldAudio := old.Audio
+		nextAudio := next.Audio
+		oldAudio.Device = nextAudio.Device
+		oldAudio.TargetObject = nextAudio.TargetObject
+		if oldAudio != nextAudio {
+			return fmt.Errorf("audio backend, format, or ring changes require restart")
+		}
 	}
 	if old.VAD != next.VAD {
 		return fmt.Errorf("VAD changes require restart")
@@ -514,13 +651,42 @@ func reloadRequiresRestart(old, next config.Config) error {
 	oldInjection := old.Injection
 	nextInjection := next.Injection
 	oldInjection.AppendSpace = nextInjection.AppendSpace
+	oldInjection.KeyDelayMS = nextInjection.KeyDelayMS
+	oldInjection.TimeoutMS = nextInjection.TimeoutMS
+	oldInjection.FocusPolicy = nextInjection.FocusPolicy
 	if oldInjection != nextInjection {
 		return fmt.Errorf("injection engine changes require restart")
 	}
-	if old.Focus != next.Focus {
-		return fmt.Errorf("focus changes require restart")
+	oldFocus := old.Focus
+	nextFocus := next.Focus
+	oldFocus.Enabled = nextFocus.Enabled
+	oldFocus.Policy = nextFocus.Policy
+	if oldFocus != nextFocus {
+		return fmt.Errorf("focus backend changes require restart")
+	}
+	if old.Sway != next.Sway {
+		return fmt.Errorf("Sway adapter changes require restart")
 	}
 	return nil
+}
+
+func liveConfig(old, next config.Config) config.Config {
+	active := next
+	active.Daemon.Socket = old.Daemon.Socket
+	active.Daemon.PreloadModel = old.Daemon.PreloadModel
+	active.Audio = old.Audio
+	active.Audio.Device = next.Audio.Device
+	active.Audio.TargetObject = next.Audio.TargetObject
+	active.VAD = old.VAD
+	active.ASR = old.ASR
+	active.Injection.Engine = old.Injection.Engine
+	active.Injection.Method = old.Injection.Method
+	active.Injection.WtypePath = old.Injection.WtypePath
+	active.Focus.Backend = old.Focus.Backend
+	active.Focus.Required = old.Focus.Required
+	active.Focus.Socket = old.Focus.Socket
+	active.Sway = old.Sway
+	return active
 }
 
 func (a *App) loadASR(ctx context.Context, session uint64) error {
@@ -622,10 +788,9 @@ func (a *App) confirmASRBackend(engine asr.Engine, resolution asr.Resolution) {
 		name, gpu = reporter.ActiveBackend()
 	}
 	if gpu {
-		resolution.Provider = asr.ProviderVulkan
 		resolution.GPUName = name
-	} else if resolution.Provider == asr.ProviderVulkan {
-		a.logWarn("whisper-cpp backend downgraded", "requested_provider", asr.ProviderVulkan, "reported_backend", name)
+	} else if resolution.Provider != asr.ProviderCPU {
+		a.logWarn("whisper-cpp backend downgraded", "requested_provider", resolution.Provider, "reported_backend", name)
 		resolution.Provider = asr.ProviderCPU
 		resolution.GPUName = ""
 	}
@@ -661,6 +826,7 @@ func (a *App) Status(ctx context.Context) api.Status {
 		st.Audio.DeviceID = src.DeviceID
 		st.Audio.DeviceName = src.DeviceName
 		st.Audio.InputLatency = src.InputLatency
+		st.Audio.InputLatencyMS = float64(src.InputLatency) / float64(time.Millisecond)
 		if src.SampleRate != 0 {
 			st.Audio.SampleRate = src.SampleRate
 		}
@@ -691,7 +857,39 @@ func (a *App) Status(ctx context.Context) api.Status {
 			st.Focus.Available = false
 		}
 	}
+	if a.permissionSource != nil {
+		pctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		snapshot, err := a.permissionSource.Snapshot(pctx)
+		cancel()
+		if err == nil {
+			st.Permissions = permissionStatus(snapshot)
+		}
+	}
+	if a.hotkey != nil && st.Hotkey != nil {
+		hctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		err := a.hotkey.Available(hctx)
+		cancel()
+		status := a.hotkey.Status()
+		copy := *st.Hotkey
+		copy.Available = err == nil
+		if status.LastErrorCode != "" {
+			copy.LastError = status.LastErrorCode
+		} else if err != nil {
+			copy.LastError = err.Error()
+		} else {
+			copy.LastError = ""
+		}
+		st.Hotkey = &copy
+	}
 	return st
+}
+
+func permissionStatus(snapshot permissions.Snapshot) *api.PermissionStatus {
+	return &api.PermissionStatus{
+		Microphone:      string(snapshot.Microphone),
+		Accessibility:   string(snapshot.Accessibility),
+		InputMonitoring: string(snapshot.InputMonitoring),
+	}
 }
 
 func (a *App) captureLoop(ctx context.Context) {
@@ -846,7 +1044,7 @@ func (a *App) touchActivity(now time.Time) {
 }
 
 func (a *App) recreateSource(ctx context.Context) error {
-	if a.sourceFactory == nil {
+	if a.sourceFactory == nil && a.audioSourceFactory == nil {
 		return audio.ErrUnavailable
 	}
 	select {
@@ -854,7 +1052,20 @@ func (a *App) recreateSource(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	src, err := a.sourceFactory()
+	a.mu.Lock()
+	audioCfg := a.cfg.Audio
+	factory := a.audioSourceFactory
+	legacyFactory := a.sourceFactory
+	a.mu.Unlock()
+	var (
+		src audio.Source
+		err error
+	)
+	if factory != nil {
+		src, err = factory(audioCfg)
+	} else {
+		src, err = legacyFactory()
+	}
 	if err != nil {
 		a.logWarn("audio source recreate failed", "error", err)
 		return normalizeError(apperr.CodeAudioBackendUnavailable, "create audio source", err)
@@ -874,6 +1085,7 @@ func (a *App) recreateSource(ctx context.Context) error {
 	a.status.Audio.DeviceID = stats.DeviceID
 	a.status.Audio.DeviceName = stats.DeviceName
 	a.status.Audio.InputLatency = stats.InputLatency
+	a.status.Audio.InputLatencyMS = float64(stats.InputLatency) / float64(time.Millisecond)
 	a.mu.Unlock()
 	closeSource(old)
 	a.logDebug("audio source recreated", "backend", stats.Backend, "sample_rate", stats.SampleRate)
@@ -882,7 +1094,7 @@ func (a *App) recreateSource(ctx context.Context) error {
 
 func (a *App) scheduleAudioRetry() {
 	a.mu.Lock()
-	if a.retryingAudio || a.sourceFactory == nil {
+	if a.retryingAudio || (a.sourceFactory == nil && a.audioSourceFactory == nil) {
 		a.mu.Unlock()
 		return
 	}
@@ -1430,13 +1642,15 @@ func statusForTarget(provider focus.Provider, target focus.Target) api.FocusStat
 	status := api.FocusStatus{
 		Backend:        target.Backend,
 		Available:      true,
-		StableID:       target.StableID,
 		AppID:          target.AppID,
 		AppName:        target.AppName,
 		PID:            target.PID,
 		SecureField:    target.SecureField,
 		DegradedReason: target.DegradedReason,
 		Sway:           target.Backend == "sway",
+	}
+	if target.Backend == "sway" {
+		status.StableID = target.StableID
 	}
 	if metadataProvider, ok := provider.(focus.MetadataProvider); ok {
 		metadata := metadataProvider.Metadata(target)

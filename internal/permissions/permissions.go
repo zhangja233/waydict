@@ -15,6 +15,14 @@ const (
 
 type State string
 
+const (
+	StateUnknown       State = "unknown"
+	StateNotDetermined State = "not_determined"
+	StateDenied        State = "denied"
+	StateGranted       State = "granted"
+	StateRestricted    State = "restricted"
+)
+
 type Snapshot struct {
 	Microphone      State
 	Accessibility   State

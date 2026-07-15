@@ -35,12 +35,16 @@ func (c *Capture) Read(context.Context, []float32) (int, error) {
 }
 
 func (c *Capture) Stats() audio.Stats {
+	device := c.cfg.Device
+	if device == "" {
+		device = c.cfg.TargetObject
+	}
 	return audio.Stats{
 		Backend:      "pipewire",
 		SampleRate:   c.cfg.SampleRate,
 		LevelDBFS:    -120,
 		Capturing:    false,
-		DeviceID:     c.cfg.TargetObject,
+		DeviceID:     device,
 		InputLatency: time.Duration(c.cfg.QuantumMS) * time.Millisecond,
 	}
 }

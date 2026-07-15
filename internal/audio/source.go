@@ -22,10 +22,10 @@ type Stats struct {
 }
 
 type Device struct {
-	ID        string
-	Name      string
-	Default   bool
-	Connected bool
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Default   bool   `json:"default,omitempty"`
+	Connected bool   `json:"connected"`
 }
 
 type DeviceManager interface {

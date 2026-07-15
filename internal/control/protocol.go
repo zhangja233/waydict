@@ -22,6 +22,11 @@ type Response struct {
 	OK      bool           `json:"ok"`
 	Error   *api.ErrorInfo `json:"error"`
 	Status  api.Status     `json:"status"`
+	Data    map[string]any `json:"data,omitempty"`
+}
+
+func OKData(id string, status api.Status, data map[string]any) Response {
+	return Response{Version: Version, ID: id, OK: true, Status: status, Data: data}
 }
 
 func NewRequest(command string, args map[string]any) Request {

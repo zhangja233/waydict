@@ -9,6 +9,7 @@ import (
 	"waydict/internal/inject"
 	"waydict/internal/loginitem"
 	"waydict/internal/permissions"
+	"waydict/internal/preferences"
 )
 
 type Capabilities struct {
@@ -31,5 +32,6 @@ type Services struct {
 	Permissions   permissions.Source
 	Hotkey        hotkey.Service
 	LoginItem     loginitem.Service
+	Preferences   preferences.Store
 	AppActivation apphost.Activator
 }

@@ -2,6 +2,7 @@ package hotkey
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -14,6 +15,32 @@ const (
 )
 
 type Modifiers uint32
+
+const (
+	ModifierControl Modifiers = 1 << iota
+	ModifierShift
+	ModifierOption
+	ModifierCommand
+)
+
+func ParseModifiers(names []string) (Modifiers, error) {
+	var modifiers Modifiers
+	for _, name := range names {
+		switch name {
+		case "control":
+			modifiers |= ModifierControl
+		case "shift":
+			modifiers |= ModifierShift
+		case "option":
+			modifiers |= ModifierOption
+		case "command":
+			modifiers |= ModifierCommand
+		default:
+			return 0, fmt.Errorf("unsupported hotkey modifier %q", name)
+		}
+	}
+	return modifiers, nil
+}
 
 type Binding struct {
 	Key       string

@@ -45,6 +45,7 @@ func TestExitForErrUsesTypedCodes(t *testing.T) {
 }
 
 func TestStatusDaemonUnavailable(t *testing.T) {
+	forceCLIPlatform(t, "linux")
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	var out, err bytes.Buffer
 	if got := run([]string{"status", "--json"}, &out, &err); got != exitcode.DaemonUnavailable {
@@ -82,6 +83,7 @@ func TestStopRejectsCommitDiscardConflict(t *testing.T) {
 }
 
 func TestTranscribeInjectCapturesFocusBeforeDecode(t *testing.T) {
+	forceCLIPlatform(t, "linux")
 	restore := replaceTranscribeDeps(t)
 	defer restore()
 	guard := &fakeFocusGuard{}
@@ -112,6 +114,7 @@ func TestTranscribeInjectCapturesFocusBeforeDecode(t *testing.T) {
 }
 
 func TestTranscribeInjectFocusChangePreventsType(t *testing.T) {
+	forceCLIPlatform(t, "linux")
 	restore := replaceTranscribeDeps(t)
 	defer restore()
 	guard := &fakeFocusGuard{checkErr: apperr.New(apperr.CodeFocusChanged, "compare focus", errors.New("focus changed from 1 to 2"))}
@@ -136,6 +139,7 @@ func TestTranscribeInjectFocusChangePreventsType(t *testing.T) {
 }
 
 func TestTranscribeInjectWarnAndTypeReportsWarning(t *testing.T) {
+	forceCLIPlatform(t, "linux")
 	restore := replaceTranscribeDeps(t)
 	defer restore()
 	guard := &fakeFocusGuard{
@@ -509,6 +513,75 @@ provider = "cpu"
 	}
 }
 
+func TestCommandClassRouting(t *testing.T) {
+	tests := []struct {
+		platform string
+		args     []string
+		want     commandClass
+	}{
+		{platform: "darwin", args: []string{"status"}, want: commandDaemonDependent},
+		{platform: "linux", args: []string{"status"}, want: commandClient},
+		{platform: "darwin", args: []string{"transcribe", "--file", "x.wav"}, want: commandLocalOnly},
+		{platform: "darwin", args: []string{"transcribe", "--file", "x.wav", "--inject"}, want: commandDaemonDependent},
+		{platform: "linux", args: []string{"daemon"}, want: commandLocalOnly},
+		{platform: "darwin", args: []string{"daemon"}, want: commandDaemonDependent},
+	}
+	for _, tc := range tests {
+		if got := commandClassFor(tc.platform, tc.args); got != tc.want {
+			t.Errorf("%s %v = %s, want %s", tc.platform, tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestDarwinNoLaunchSkipsLauncher(t *testing.T) {
+	forceCLIPlatform(t, "darwin")
+	oldSend, oldLaunch := controlSend, launchAppBundle
+	t.Cleanup(func() { controlSend, launchAppBundle = oldSend, oldLaunch })
+	controlSend = func(context.Context, string, control.Request) (control.Response, error) {
+		return control.Response{}, os.ErrNotExist
+	}
+	launched := false
+	launchAppBundle = func(context.Context, string) error {
+		launched = true
+		return nil
+	}
+	_, err := sendRuntimeRequest(context.Background(), "/tmp/waydict-501/control.sock", control.NewRequest("status", nil), cliOptions{noLaunch: true})
+	if !errors.Is(err, os.ErrNotExist) || launched {
+		t.Fatalf("error=%v launched=%t", err, launched)
+	}
+}
+
+func TestDarwinTranscribeInjectDelegatesToApp(t *testing.T) {
+	restore := replaceTranscribeDeps(t)
+	defer restore()
+	forceCLIPlatform(t, "darwin")
+	oldSend := controlSend
+	t.Cleanup(func() { controlSend = oldSend })
+	newInjector = func(config.Injection) inject.Injector {
+		t.Fatal("Darwin CLI constructed an injector")
+		return nil
+	}
+	newFocusGuard = func(config.Config) focusGuard {
+		t.Fatal("Darwin CLI constructed a focus guard")
+		return nil
+	}
+	transcribeFileFunc = func(context.Context, config.Config, string, io.Writer) (asr.Transcript, int) {
+		return asr.Transcript{Text: "hello"}, exitcode.Success
+	}
+	var request control.Request
+	controlSend = func(_ context.Context, _ string, req control.Request) (control.Response, error) {
+		request = req
+		return control.OK(req.ID, api.Status{}), nil
+	}
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"transcribe", "--file", "sample.wav", "--inject"}, &stdout, &stderr); got != exitcode.Success {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", got, stdout.String(), stderr.String())
+	}
+	if request.Command != "inject_text" || request.Args["text"] != "hello " {
+		t.Fatalf("request = %+v", request)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -544,6 +617,13 @@ func replaceTranscribeDeps(t *testing.T) func() {
 		newWhisperEngineHook = oldNewWhisper
 		probeGPUHook = oldProbeGPU
 	}
+}
+
+func forceCLIPlatform(t *testing.T, platform string) {
+	t.Helper()
+	old := cliPlatform
+	cliPlatform = platform
+	t.Cleanup(func() { cliPlatform = old })
 }
 
 type fakeFocusGuard struct {

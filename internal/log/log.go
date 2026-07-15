@@ -7,19 +7,33 @@ import (
 )
 
 func New(level string, out io.Writer) *slog.Logger {
+	logger, _ := NewDynamic(level, out)
+	return logger
+}
+
+func NewDynamic(level string, out io.Writer) (*slog.Logger, *slog.LevelVar) {
 	if out == nil {
 		out = os.Stderr
 	}
-	var lvl slog.Level
+	levelVar := &slog.LevelVar{}
+	SetLevel(levelVar, level)
+	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: levelVar})), levelVar
+}
+
+func SetLevel(target *slog.LevelVar, level string) {
+	if target == nil {
+		return
+	}
+	var parsed slog.Level
 	switch level {
 	case "debug":
-		lvl = slog.LevelDebug
+		parsed = slog.LevelDebug
 	case "warn":
-		lvl = slog.LevelWarn
+		parsed = slog.LevelWarn
 	case "error":
-		lvl = slog.LevelError
+		parsed = slog.LevelError
 	default:
-		lvl = slog.LevelInfo
+		parsed = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl}))
+	target.Set(parsed)
 }

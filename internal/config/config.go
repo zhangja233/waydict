@@ -21,9 +21,12 @@ type Config struct {
 	ASR         ASR         `toml:"asr"`
 	Injection   Injection   `toml:"injection"`
 	Focus       Focus       `toml:"focus"`
+	Hotkey      Hotkey      `toml:"hotkey"`
 	PostProcess PostProcess `toml:"postprocess"`
 	Sway        Sway        `toml:"sway"`
 	Debug       Debug       `toml:"debug"`
+
+	source configSource
 }
 
 type Daemon struct {
@@ -36,6 +39,7 @@ type Daemon struct {
 
 type Audio struct {
 	Backend      string `toml:"backend"`
+	Device       string `toml:"device"`
 	SampleRate   int    `toml:"sample_rate"`
 	Channels     int    `toml:"channels"`
 	Format       string `toml:"format"`
@@ -77,6 +81,7 @@ type ASR struct {
 
 type Injection struct {
 	Engine      string `toml:"engine"`
+	Method      string `toml:"method"`
 	WtypePath   string `toml:"wtype_path"`
 	KeyDelayMS  int    `toml:"key_delay_ms"`
 	TimeoutMS   int    `toml:"timeout_ms"`
@@ -85,10 +90,20 @@ type Injection struct {
 }
 
 type Focus struct {
-	Enabled  bool   `toml:"enabled"`
-	Backend  string `toml:"backend"`
+	Enabled bool   `toml:"enabled"`
+	Backend string `toml:"backend"`
+	Policy  string `toml:"policy"`
+	// Required and Socket are retained for PR1/Linux compatibility.
 	Required bool   `toml:"required"`
 	Socket   string `toml:"socket"`
+}
+
+type Hotkey struct {
+	Enabled   bool     `toml:"enabled"`
+	Key       string   `toml:"key"`
+	KeyCode   int      `toml:"key_code"`
+	Modifiers []string `toml:"modifiers"`
+	Mode      string   `toml:"mode"`
 }
 
 type PostProcess struct {
@@ -111,40 +126,118 @@ type Debug struct {
 	LogTranscripts    bool   `toml:"log_transcripts"`
 }
 
+type configSource struct {
+	platform string
+	paths    PlatformPaths
+	path     string
+	legacy   bool
+	warnings []string
+	explicit map[string]bool
+}
+
+type LoadOptions struct {
+	Path           string
+	Platform       string
+	Paths          PlatformPaths
+	ConfigOverride string
+}
+
 func Load(path string) (Config, error) {
-	cfg := Defaults()
-	if path == "" {
-		path = DefaultPath()
+	return LoadWithOptions(LoadOptions{Path: path})
+}
+
+func LoadFor(platform string, paths PlatformPaths, path string) (Config, error) {
+	return LoadWithOptions(LoadOptions{Path: path, Platform: platform, Paths: paths})
+}
+
+func LoadWithOptions(opts LoadOptions) (Config, error) {
+	platform := opts.Platform
+	if platform == "" {
+		platform = runtime.GOOS
 	}
-	if _, err := os.Stat(path); err == nil {
-		metadata, err := toml.DecodeFile(path, &cfg)
-		if err != nil {
+	paths := opts.Paths
+	if paths.ConfigFile == "" {
+		paths = CurrentPlatformPaths()
+	}
+	cfg := DefaultsFor(platform, paths)
+	path := opts.Path
+	if path == "" {
+		override := opts.ConfigOverride
+		if override == "" && platform == "darwin" {
+			override = os.Getenv("WAYDICT_CONFIG")
+		}
+		for _, candidate := range ConfigSearchPathsFor(platform, paths, override) {
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return Config{}, err
+			}
+		}
+	}
+	if path != "" {
+		if _, err := os.Stat(path); err == nil {
+			metadata, err := toml.DecodeFile(path, &cfg)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.source.path = path
+			cfg.source.legacy = isLegacyConfigPath(path, paths)
+			cfg.captureExplicitFields(metadata)
+			cfg.applyLegacyConfig(platform, metadata)
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return Config{}, err
 		}
-		cfg.applyLegacyFocus(metadata)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Config{}, err
 	}
-	cfg.applyASRDefaults()
+	cfg.applyASRDefaults(platform)
 	if err := cfg.Expand(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func (c *Config) applyLegacyFocus(metadata toml.MetaData) {
-	if !metadata.IsDefined("focus", "enabled") {
-		c.Focus.Enabled = c.Sway.FocusCheck
+func (c *Config) captureExplicitFields(metadata toml.MetaData) {
+	c.source.explicit = make(map[string]bool)
+	for _, key := range metadata.Keys() {
+		c.source.explicit[key.String()] = true
 	}
-	if !metadata.IsDefined("focus", "required") {
+}
+
+func (c *Config) applyLegacyConfig(platform string, metadata toml.MetaData) {
+	if metadata.IsDefined("audio", "target_object") && c.Audio.TargetObject != "" {
+		switch {
+		case platform == "linux" && (!metadata.IsDefined("audio", "device") || c.Audio.Device == ""):
+			c.Audio.Device = c.Audio.TargetObject
+			c.addMigrationWarning("audio.target_object was mapped to audio.device")
+		case platform == "darwin" && !metadata.IsDefined("audio", "device"):
+			c.addMigrationWarning("audio.target_object is Linux-only and was ignored on macOS")
+		}
+	}
+	if metadata.IsDefined("injection", "focus_policy") && !metadata.IsDefined("focus", "policy") {
+		c.Focus.Policy = c.Injection.FocusPolicy
+		c.addMigrationWarning("injection.focus_policy was mapped to focus.policy")
+	}
+	if metadata.IsDefined("sway", "focus_check") && !c.Sway.FocusCheck && !metadata.IsDefined("focus") {
+		c.Focus.Enabled = false
+		c.addMigrationWarning("sway.focus_check=false was mapped to focus.enabled=false")
+	}
+	if platform == "linux" && metadata.IsDefined("sway", "require_sway") && c.Sway.RequireSway && !metadata.IsDefined("focus", "backend") {
+		c.Focus.Backend = "sway"
+		c.addMigrationWarning("sway.require_sway=true was mapped to focus.backend=\"sway\"")
+	}
+	if platform == "linux" && !metadata.IsDefined("focus", "required") {
 		c.Focus.Required = c.Sway.RequireSway
 	}
-	if !metadata.IsDefined("focus", "socket") {
+	if platform == "linux" && !metadata.IsDefined("focus", "socket") && metadata.IsDefined("sway", "socket") {
 		c.Focus.Socket = c.Sway.Socket
 	}
 }
 
-func (c *Config) applyASRDefaults() {
+func (c *Config) addMigrationWarning(message string) {
+	c.source.warnings = append(c.source.warnings, message)
+}
+
+func (c *Config) applyASRDefaults(platform string) {
 	if c.ASR.Provider != "" {
 		return
 	}
@@ -152,8 +245,33 @@ func (c *Config) applyASRDefaults() {
 	case asr.EngineSherpa:
 		c.ASR.Provider = asr.ProviderCPU
 	case asr.EngineWhisper:
-		c.ASR.Provider = asr.ProviderVulkan
+		if platform == "linux" {
+			c.ASR.Provider = asr.ProviderVulkan
+		}
 	}
+}
+
+func isLegacyConfigPath(path string, paths PlatformPaths) bool {
+	clean := filepath.Clean(path)
+	for _, legacy := range paths.LegacyConfigFiles {
+		if clean == filepath.Clean(legacy) && clean != filepath.Clean(paths.ConfigFile) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c Config) Platform() string       { return c.source.platform }
+func (c Config) ActivePath() string     { return c.source.path }
+func (c Config) LegacyPathActive() bool { return c.source.legacy }
+func (c Config) Paths() PlatformPaths   { return c.source.paths }
+
+func (c Config) MigrationWarnings() []string {
+	return append([]string(nil), c.source.warnings...)
+}
+
+func (c Config) IsExplicit(key string) bool {
+	return c.source.explicit[key]
 }
 
 func (c *Config) Expand() error {
@@ -238,18 +356,33 @@ func (c Config) TokensPath() string {
 }
 
 func (c Config) WhisperModelPath() string {
-	return filepath.Join(DefaultModelsRoot(), "whisper", c.ASR.WhisperModel+".bin")
+	root := c.source.paths.ModelsDir
+	if root == "" {
+		root = DefaultModelsRoot()
+	}
+	return filepath.Join(root, "whisper", c.ASR.WhisperModel+".bin")
+}
+
+func (c Config) EffectiveFocusPolicy() string {
+	if c.Focus.Policy != "" {
+		return c.Focus.Policy
+	}
+	return c.Injection.FocusPolicy
 }
 
 func (c Config) Validate() error {
+	return c.ValidateFor(c.defaultCapabilitySet())
+}
+
+func (c Config) ValidateFor(capabilities CapabilitySet) error {
 	if strings.TrimSpace(c.Daemon.Socket) == "" {
 		return fmt.Errorf("daemon.socket must not be empty")
 	}
 	if !supportedLogLevel(c.Daemon.LogLevel) {
 		return fmt.Errorf("daemon.log_level must be debug, info, warn, or error")
 	}
-	if c.Audio.Backend != "pipewire" {
-		return fmt.Errorf("audio.backend must equal pipewire")
+	if c.Audio.Backend != "auto" && !contains(capabilities.AudioBackends, c.Audio.Backend) {
+		return fmt.Errorf("audio.backend %q is unavailable on %s", c.Audio.Backend, capabilities.Platform)
 	}
 	if c.Audio.Format != "f32le" {
 		return fmt.Errorf("audio.format must equal f32le")
@@ -257,17 +390,23 @@ func (c Config) Validate() error {
 	if c.Audio.QuantumMS <= 0 {
 		return fmt.Errorf("audio.quantum_ms must be positive")
 	}
-	if err := c.ValidateASR(); err != nil {
+	if err := c.ValidateASRFor(capabilities); err != nil {
 		return err
 	}
-	if c.Injection.Engine != "wtype" {
-		return fmt.Errorf("injection.engine must equal wtype")
+	if c.Injection.Engine != "auto" && !contains(capabilities.InjectionEngines, c.Injection.Engine) {
+		return fmt.Errorf("injection.engine %q is unavailable on %s", c.Injection.Engine, capabilities.Platform)
 	}
-	if strings.TrimSpace(c.Injection.WtypePath) == "" {
+	if c.Injection.Engine == "wtype" && strings.TrimSpace(c.Injection.WtypePath) == "" {
 		return fmt.Errorf("injection.wtype_path must not be empty")
 	}
-	if !c.Sway.RequireSway {
-		return fmt.Errorf("sway.require_sway must be true")
+	if c.Injection.Method != "" && c.Injection.Method != "unicode" {
+		return fmt.Errorf("injection.method must equal unicode")
+	}
+	if c.Focus.Backend == "none" && c.Focus.Enabled {
+		return fmt.Errorf("focus.backend=none requires focus.enabled=false")
+	}
+	if c.Focus.Backend != "auto" && c.Focus.Backend != "none" && !contains(capabilities.FocusBackends, c.Focus.Backend) {
+		return fmt.Errorf("focus.backend %q is unavailable on %s", c.Focus.Backend, capabilities.Platform)
 	}
 	if c.Daemon.AutoStopAfterSilenceSeconds < 0 {
 		return fmt.Errorf("daemon.auto_stop_after_silence_seconds must not be negative")
@@ -321,8 +460,33 @@ func (c Config) Validate() error {
 	if c.Injection.TimeoutMS <= 0 {
 		return fmt.Errorf("injection.timeout_ms must be positive")
 	}
-	if c.Injection.FocusPolicy != "cancel_on_focus_change" && c.Injection.FocusPolicy != "warn_and_type" && c.Injection.FocusPolicy != "type_current" {
-		return fmt.Errorf("unsupported injection.focus_policy %q", c.Injection.FocusPolicy)
+	policy := c.EffectiveFocusPolicy()
+	if policy != "cancel_on_focus_change" && policy != "warn_and_type" && policy != "type_current" {
+		return fmt.Errorf("unsupported focus.policy %q", policy)
+	}
+	if c.Hotkey.Enabled {
+		if !capabilities.HotkeyAllowed {
+			return fmt.Errorf("hotkey.enabled is unsupported on %s", capabilities.Platform)
+		}
+		if strings.TrimSpace(c.Hotkey.Key) == "" && c.Hotkey.KeyCode < 0 {
+			return fmt.Errorf("hotkey.key must not be empty when key_code is unset")
+		}
+		if c.Hotkey.KeyCode < -1 || c.Hotkey.KeyCode > 127 {
+			return fmt.Errorf("hotkey.key_code must be between -1 and 127")
+		}
+		if c.Hotkey.Mode != "hold" && c.Hotkey.Mode != "toggle" && c.Hotkey.Mode != "oneshot" {
+			return fmt.Errorf("hotkey.mode must be hold, toggle, or oneshot")
+		}
+		seen := make(map[string]bool)
+		for _, modifier := range c.Hotkey.Modifiers {
+			if modifier != "control" && modifier != "shift" && modifier != "option" && modifier != "command" {
+				return fmt.Errorf("unsupported hotkey modifier %q", modifier)
+			}
+			if seen[modifier] {
+				return fmt.Errorf("duplicate hotkey modifier %q", modifier)
+			}
+			seen[modifier] = true
+		}
 	}
 	if c.Debug.SaveAudioSegments && strings.TrimSpace(c.Debug.SaveAudioDir) == "" {
 		return fmt.Errorf("debug.save_audio_dir must not be empty when debug.save_audio_segments is true")
@@ -331,16 +495,27 @@ func (c Config) Validate() error {
 }
 
 func (c Config) ValidateASR() error {
+	return c.ValidateASRFor(c.defaultCapabilitySet())
+}
+
+func (c Config) defaultCapabilitySet() CapabilitySet {
+	if c.source.platform != "" {
+		return CapabilitySetFor(c.source.platform)
+	}
+	return CurrentCapabilitySet()
+}
+
+func (c Config) ValidateASRFor(capabilities CapabilitySet) error {
 	switch c.ASR.Engine {
 	case asr.EngineSherpa:
-		return c.validateSherpaASR()
+		return c.validateSherpaASR(capabilities)
 	case asr.EngineWhisper:
 		provider := c.ASR.Provider
 		if provider == "" {
-			provider = asr.ProviderVulkan
+			provider = preferredProvider(capabilities.WhisperProviders)
 		}
-		if provider != asr.ProviderCPU && provider != asr.ProviderVulkan {
-			return fmt.Errorf("asr.provider must be cpu or vulkan for whisper-cpp")
+		if !contains(capabilities.WhisperProviders, provider) {
+			return fmt.Errorf("asr.provider %q is unavailable for whisper-cpp on %s", provider, capabilities.Platform)
 		}
 		if err := validateWhisperModelName(c.ASR.WhisperModel); err != nil {
 			return err
@@ -350,8 +525,8 @@ func (c Config) ValidateASR() error {
 		}
 		return nil
 	case asr.EngineAuto:
-		if c.ASR.Provider != "" && c.ASR.Provider != asr.ProviderCPU && c.ASR.Provider != asr.ProviderVulkan {
-			return fmt.Errorf("asr.provider must be empty, cpu, or vulkan for auto")
+		if c.ASR.Provider != "" && !contains(capabilities.WhisperProviders, c.ASR.Provider) {
+			return fmt.Errorf("asr.provider %q is unavailable for auto on %s", c.ASR.Provider, capabilities.Platform)
 		}
 		if c.ASR.GPUDevice < 0 {
 			return fmt.Errorf("asr.gpu_device must not be negative")
@@ -379,13 +554,13 @@ func validateWhisperModelName(name string) error {
 	return nil
 }
 
-func (c Config) validateSherpaASR() error {
+func (c Config) validateSherpaASR(capabilities CapabilitySet) error {
 	provider := c.ASR.Provider
 	if provider == "" {
-		provider = asr.ProviderCPU
+		provider = preferredProvider(capabilities.SherpaProviders)
 	}
-	if provider != asr.ProviderCPU {
-		return fmt.Errorf("asr.provider must equal cpu for sherpa-onnx")
+	if !contains(capabilities.SherpaProviders, provider) {
+		return fmt.Errorf("asr.provider %q is unavailable for sherpa-onnx on %s", provider, capabilities.Platform)
 	}
 	if c.ASR.ModelType != "nemo_transducer" {
 		return fmt.Errorf("asr.model_type must equal nemo_transducer")
@@ -420,6 +595,13 @@ func (c Config) validateSherpaASR() error {
 		return fmt.Errorf("asr.num_threads must be between 1 and %d", runtime.NumCPU())
 	}
 	return nil
+}
+
+func preferredProvider(providers []string) string {
+	if len(providers) == 0 {
+		return ""
+	}
+	return providers[0]
 }
 
 func supportedLogLevel(level string) bool {

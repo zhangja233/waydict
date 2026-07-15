@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,14 +20,14 @@ import (
 	"waydict/internal/asr"
 	sherpaasr "waydict/internal/asr/sherpa"
 	"waydict/internal/audio"
-	"waydict/internal/audio/pipewire"
-	"waydict/internal/buildinfo"
 	"waydict/internal/config"
 	"waydict/internal/control"
+	"waydict/internal/doctor"
 	"waydict/internal/exitcode"
 	"waydict/internal/focus"
 	swayfocus "waydict/internal/focus/sway"
 	"waydict/internal/inject"
+	"waydict/internal/metrics"
 	"waydict/internal/model"
 	"waydict/internal/modelinstall"
 	"waydict/internal/swayipc"
@@ -40,32 +38,72 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+type cliOptions struct {
+	noLaunch bool
+}
+
+type commandClass string
+
+const (
+	commandClient          commandClass = "client"
+	commandLocalOnly       commandClass = "local_only"
+	commandDaemonDependent commandClass = "daemon_dependent"
+)
+
+const waydictBundleID = "io.github.zhangja233.waydict"
+
+var (
+	cliPlatform      = runtime.GOOS
+	controlSend      = control.Send
+	launchAppBundle  = launchWaydictBundle
+	appLaunchTimeout = 5 * time.Second
+	appPollInterval  = 50 * time.Millisecond
+)
+
 func run(args []string, stdout, stderr io.Writer) int {
+	opts, args, err := parseGlobalOptions(args)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		usage(stderr)
+		return exitcode.Usage
+	}
 	if len(args) == 0 {
 		usage(stderr)
 		return exitcode.Usage
 	}
 	switch args[0] {
 	case "daemon":
-		return runDaemon(args[1:], stderr)
+		return runDaemon(args[1:], stderr, opts)
 	case "start":
-		return sendCommand(args[1:], stdout, stderr, "start")
+		return sendCommand(args[1:], stdout, stderr, "start", opts)
 	case "stop":
-		return sendCommand(args[1:], stdout, stderr, "stop")
+		return sendCommand(args[1:], stdout, stderr, "stop", opts)
 	case "release":
-		return sendCommand(args[1:], stdout, stderr, "release")
+		return sendCommand(args[1:], stdout, stderr, "release", opts)
 	case "toggle":
-		return sendCommand(args[1:], stdout, stderr, "toggle")
+		return sendCommand(args[1:], stdout, stderr, "toggle", opts)
 	case "status":
-		return sendCommand(args[1:], stdout, stderr, "status")
+		return sendCommand(args[1:], stdout, stderr, "status", opts)
+	case "reload_config":
+		return sendCommand(args[1:], stdout, stderr, "reload_config", opts)
+	case "shutdown":
+		return sendCommand(args[1:], stdout, stderr, "shutdown", opts)
 	case "transcribe":
-		return runTranscribe(args[1:], stdout, stderr)
+		return runTranscribe(args[1:], stdout, stderr, opts)
 	case "model":
 		return runModel(args[1:], stdout, stderr)
 	case "bench":
 		return runBench(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "permissions":
+		return runPermissions(args[1:], stdout, stderr, opts)
+	case "audio":
+		return runAudio(args[1:], stdout, stderr, opts)
+	case "restart":
+		return sendCommand(args[1:], stdout, stderr, "restart_runtime", opts)
+	case "app":
+		return runAppCommand(args[1:], stdout, stderr, opts)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		usage(stderr)
@@ -73,14 +111,68 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+func parseGlobalOptions(args []string) (cliOptions, []string, error) {
+	opts := cliOptions{}
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch args[0] {
+		case "--no-launch":
+			opts.noLaunch = true
+			args = args[1:]
+		default:
+			return cliOptions{}, nil, fmt.Errorf("unknown global option %q", args[0])
+		}
+	}
+	return opts, args, nil
+}
+
+func commandClassFor(platform string, args []string) commandClass {
+	if len(args) == 0 {
+		return commandLocalOnly
+	}
+	switch args[0] {
+	case "model", "bench", "doctor":
+		return commandLocalOnly
+	case "transcribe":
+		for _, arg := range args[1:] {
+			if arg == "--inject" || arg == "--inject=true" {
+				if platform == "darwin" {
+					return commandDaemonDependent
+				}
+				return commandLocalOnly
+			}
+		}
+		return commandLocalOnly
+	case "daemon":
+		if platform == "darwin" {
+			return commandDaemonDependent
+		}
+		return commandLocalOnly
+	case "start", "stop", "release", "toggle", "status", "reload_config", "shutdown", "permissions", "audio", "restart", "app":
+		if platform == "darwin" {
+			return commandDaemonDependent
+		}
+		return commandClient
+	default:
+		return commandLocalOnly
+	}
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
+	waydict [--no-launch] COMMAND
   waydict daemon [--config PATH] [--foreground] [--log-level LEVEL]
   waydict start [--mode toggle|oneshot|hold]
   waydict stop [--commit|--discard]
   waydict release
   waydict toggle
   waydict status [--json]
+	waydict reload_config
+	waydict shutdown
+	waydict app open|quit
+	waydict permissions [--json]
+	waydict audio devices [--json]
+	waydict audio use <device-uid|default>
+	waydict restart
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
   waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-model-name, e.g. ggml-large-v3-turbo|all> [--dir PATH]
@@ -89,11 +181,11 @@ func usage(w io.Writer) {
   waydict doctor`)
 }
 
-func runDaemon(args []string, stderr io.Writer) int {
+func runDaemon(args []string, stderr io.Writer, opts cliOptions) int {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "config path")
-	_ = fs.Bool("foreground", false, "run in foreground")
+	foreground := fs.Bool("foreground", false, "run in foreground")
 	logLevel := fs.String("log-level", "", "log level")
 	if err := fs.Parse(args); err != nil {
 		return exitcode.Usage
@@ -105,6 +197,32 @@ func runDaemon(args []string, stderr io.Writer) int {
 	}
 	if *logLevel != "" {
 		cfg.Daemon.LogLevel = *logLevel
+	}
+	if cliPlatform == "darwin" {
+		fmt.Fprintln(stderr, "waydict daemon: the signed Waydict app hosts the daemon on macOS")
+		ctx, cancel := context.WithTimeout(context.Background(), appLaunchTimeout)
+		resp, err := sendRuntimeRequest(ctx, cfg.Daemon.Socket, control.NewRequest("status", nil), opts)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitForControlErr(err)
+		}
+		if !resp.OK {
+			fmt.Fprintf(stderr, "%s: %s\n", resp.Error.Code, resp.Error.Message)
+			return exitcode.ForErrorCode(resp.Error.Code)
+		}
+		if !*foreground {
+			return exitcode.Success
+		}
+		for {
+			time.Sleep(250 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			_, err := controlSend(ctx, cfg.Daemon.Socket, control.NewRequest("status", nil))
+			cancel()
+			if err != nil {
+				return exitcode.Success
+			}
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -120,7 +238,7 @@ func runDaemon(args []string, stderr io.Writer) int {
 	return exitcode.Success
 }
 
-func sendCommand(args []string, stdout, stderr io.Writer, command string) int {
+func sendCommand(args []string, stdout, stderr io.Writer, command string, opts cliOptions) int {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	mode := fs.String("mode", "", "mode")
@@ -153,9 +271,9 @@ func sendCommand(args []string, stdout, stderr io.Writer, command string) int {
 		reqArgs["commit"] = *commit
 		reqArgs["discard"] = *discard
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), appLaunchTimeout+time.Second)
 	defer cancel()
-	resp, err := control.Send(ctx, cfg.Daemon.Socket, control.NewRequest(command, reqArgs))
+	resp, err := sendRuntimeRequest(ctx, cfg.Daemon.Socket, control.NewRequest(command, reqArgs), opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "daemon unavailable: %v\n", err)
 		return exitForControlErr(err)
@@ -174,14 +292,164 @@ func sendCommand(args []string, stdout, stderr io.Writer, command string) int {
 	return exitcode.Success
 }
 
+func sendRuntimeRequest(ctx context.Context, socket string, req control.Request, opts cliOptions) (control.Response, error) {
+	resp, err := controlSend(ctx, socket, req)
+	if err == nil || cliPlatform != "darwin" || opts.noLaunch || !launchableSocketError(err) {
+		return resp, err
+	}
+	if launchErr := launchAppBundle(ctx, waydictBundleID); launchErr != nil {
+		return control.Response{}, apperr.New(apperr.CodeAppNotInstalled, "launch Waydict.app", fmt.Errorf("Waydict.app (%s) is not installed: %w", waydictBundleID, launchErr))
+	}
+	deadline := time.Now().Add(appLaunchTimeout)
+	for {
+		if time.Now().After(deadline) {
+			return control.Response{}, fmt.Errorf("daemon unavailable after launching Waydict.app: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return control.Response{}, ctx.Err()
+		case <-time.After(appPollInterval):
+		}
+		resp, err = controlSend(ctx, socket, req)
+		if err == nil || !launchableSocketError(err) {
+			return resp, err
+		}
+	}
+}
+
+func launchableSocketError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT)
+}
+
 func exitForControlErr(err error) int {
 	if errors.Is(err, control.ErrSocketPermission) {
 		return exitcode.Permission
 	}
+	if code := apperr.Code(err); code != apperr.CodeInternalError {
+		return exitcode.ForErrorCode(code)
+	}
 	return exitcode.DaemonUnavailable
 }
 
-func runTranscribe(args []string, stdout, stderr io.Writer) int {
+func runPermissions(args []string, stdout, stderr io.Writer, opts cliOptions) int {
+	fs := flag.NewFlagSet("permissions", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		return exitcode.Usage
+	}
+	resp, code := requestDataCommand("permissions", nil, stdout, stderr, opts)
+	if code != exitcode.Success {
+		return code
+	}
+	if *jsonOut {
+		printJSON(stdout, resp.Data)
+		return exitcode.Success
+	}
+	for _, key := range []string{"microphone", "accessibility", "input_monitoring"} {
+		fmt.Fprintf(stdout, "%s=%v\n", key, resp.Data[key])
+	}
+	return exitcode.Success
+}
+
+func runAudio(args []string, stdout, stderr io.Writer, opts cliOptions) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "missing audio subcommand")
+		return exitcode.Usage
+	}
+	switch args[0] {
+	case "devices":
+		fs := flag.NewFlagSet("audio devices", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		jsonOut := fs.Bool("json", false, "print JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return exitcode.Usage
+		}
+		resp, code := requestDataCommand("list_audio_devices", nil, stdout, stderr, opts)
+		if code != exitcode.Success {
+			return code
+		}
+		if *jsonOut {
+			printJSON(stdout, resp.Data["devices"])
+			return exitcode.Success
+		}
+		printAudioDevices(stdout, resp.Data["devices"])
+		return exitcode.Success
+	case "use":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "usage: waydict audio use <device-uid|default>")
+			return exitcode.Usage
+		}
+		_, code := requestDataCommand("set_audio_device", map[string]any{"id": args[1]}, stdout, stderr, opts)
+		return code
+	default:
+		fmt.Fprintf(stderr, "unknown audio subcommand %q\n", args[0])
+		return exitcode.Usage
+	}
+}
+
+func runAppCommand(args []string, stdout, stderr io.Writer, opts cliOptions) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: waydict app open|quit")
+		return exitcode.Usage
+	}
+	command := ""
+	switch args[0] {
+	case "open":
+		command = "activate_app"
+	case "quit":
+		command = "shutdown"
+	default:
+		fmt.Fprintln(stderr, "usage: waydict app open|quit")
+		return exitcode.Usage
+	}
+	_, code := requestDataCommand(command, nil, stdout, stderr, opts)
+	return code
+}
+
+func requestDataCommand(command string, args map[string]any, stdout, stderr io.Writer, opts cliOptions) (control.Response, int) {
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return control.Response{}, exitcode.Generic
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), appLaunchTimeout+time.Second)
+	defer cancel()
+	resp, err := sendRuntimeRequest(ctx, cfg.Daemon.Socket, control.NewRequest(command, args), opts)
+	if err != nil {
+		fmt.Fprintf(stderr, "daemon unavailable: %v\n", err)
+		return control.Response{}, exitForControlErr(err)
+	}
+	if !resp.OK {
+		fmt.Fprintf(stderr, "%s: %s\n", resp.Error.Code, resp.Error.Message)
+		return resp, exitcode.ForErrorCode(resp.Error.Code)
+	}
+	return resp, exitcode.Success
+}
+
+func printAudioDevices(w io.Writer, value any) {
+	switch devices := value.(type) {
+	case []audio.Device:
+		for _, device := range devices {
+			marker := ""
+			if device.Default {
+				marker = " default"
+			}
+			fmt.Fprintf(w, "%s\t%s%s\n", device.ID, device.Name, marker)
+		}
+	case []any:
+		for _, item := range devices {
+			device, _ := item.(map[string]any)
+			marker := ""
+			if value, _ := device["default"].(bool); value {
+				marker = " default"
+			}
+			fmt.Fprintf(w, "%v\t%v%s\n", device["id"], device["name"], marker)
+		}
+	}
+}
+
+func runTranscribe(args []string, stdout, stderr io.Writer, opts cliOptions) int {
 	fs := flag.NewFlagSet("transcribe", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	file := fs.String("file", "", "audio file")
@@ -204,7 +472,7 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 		return exitcode.ModelInvalid
 	}
 	var prepared *preparedInjection
-	if *injectText {
+	if *injectText && cliPlatform != "darwin" {
 		var err error
 		prepared, err = prepareInjection(context.Background(), cfg, stderr)
 		if err != nil {
@@ -224,7 +492,19 @@ func runTranscribe(args []string, stdout, stderr io.Writer) int {
 		if text == "" {
 			return exitcode.Success
 		}
-		if err := prepared.TypeText(context.Background(), text); err != nil {
+		if cliPlatform == "darwin" {
+			ctx, cancel := context.WithTimeout(context.Background(), appLaunchTimeout+time.Second)
+			resp, err := sendRuntimeRequest(ctx, cfg.Daemon.Socket, control.NewRequest("inject_text", map[string]any{"text": text}), opts)
+			cancel()
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return exitForControlErr(err)
+			}
+			if !resp.OK {
+				fmt.Fprintf(stderr, "%s: %s\n", resp.Error.Code, resp.Error.Message)
+				return exitcode.ForErrorCode(resp.Error.Code)
+			}
+		} else if err := prepared.TypeText(context.Background(), text); err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitForErr(err)
 		}
@@ -291,7 +571,7 @@ var (
 	newFocusGuard      = func(cfg config.Config) focusGuard {
 		provider := swayfocus.New(swayipc.New(cfg.Focus.Socket))
 		return &focusGuardAdapter{
-			guard:    focus.NewGuard(provider, focus.Policy(cfg.Injection.FocusPolicy)),
+			guard:    focus.NewGuard(provider, focus.Policy(cfg.EffectiveFocusPolicy())),
 			provider: provider,
 		}
 	}
@@ -304,14 +584,16 @@ var (
 
 func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 	provider := cfg.ASR.Provider
-	if provider == "" && cfg.ASR.Engine == asr.EngineWhisper {
-		provider = asr.ProviderVulkan
+	preferred := asr.ProviderVulkan
+	if cfg.Platform() == "darwin" {
+		preferred = asr.ProviderMetal
 	}
 	sherpaCfg := cfg.ASR
 	sherpaCfg.Provider = asr.ProviderCPU
 	deps := asr.ResolverDeps{
-		NewSherpa: func() asr.Engine { return newASREngine(sherpaCfg) },
-		ProbeGPU:  probeGPUHook,
+		PreferredWhisperProvider: preferred,
+		NumThreads:               cfg.ASR.NumThreads,
+		NewSherpa:                func() asr.Engine { return newASREngine(sherpaCfg) },
 		WhisperModelPath: func() (string, error) {
 			path := cfg.WhisperModelPath()
 			info, err := os.Stat(path)
@@ -324,9 +606,15 @@ func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 			return path, nil
 		},
 	}
+	if probeGPUHook != nil {
+		deps.ProbeAccelerator = func(provider string, device int) (asr.Accelerator, error) {
+			name, err := probeGPUHook()
+			return asr.Accelerator{Provider: provider, Device: device, Name: name}, err
+		}
+	}
 	if hook := newWhisperEngineHook; hook != nil {
-		deps.NewWhisper = func(modelPath string, device int, useGPU bool) (asr.Engine, error) {
-			return hook(modelPath, device, cfg.ASR.NumThreads, useGPU)
+		deps.NewWhisper = func(modelPath, provider string, device, threads int) (asr.Engine, error) {
+			return hook(modelPath, device, threads, provider != asr.ProviderCPU)
 		}
 	}
 	engine, resolution, err := asr.Resolve(cfg.ASR.Engine, provider, cfg.ASR.GPUDevice, deps)
@@ -403,10 +691,9 @@ func confirmResolvedBackend(engine asr.Engine, resolution asr.Resolution, stderr
 		name, gpu = reporter.ActiveBackend()
 	}
 	if gpu {
-		resolution.Provider = asr.ProviderVulkan
 		resolution.GPUName = name
-	} else if resolution.Provider == asr.ProviderVulkan {
-		fmt.Fprintf(stderr, "whisper-cpp backend downgraded to cpu (reported backend %q)\n", name)
+	} else if resolution.Provider != asr.ProviderCPU {
+		fmt.Fprintf(stderr, "whisper-cpp backend downgraded to cpu (requested %s, reported backend %q)\n", resolution.Provider, name)
 		resolution.Provider = asr.ProviderCPU
 		resolution.GPUName = ""
 	}
@@ -689,7 +976,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		"engine":         resolution.Engine,
 		"provider":       resolution.Provider,
 		"model":          benchModel,
-		"rss_peak_bytes": peakRSS(),
+		"rss_peak_bytes": metrics.PeakRSSBytes(),
 	}
 	printJSON(stdout, out)
 	return exitcode.Success
@@ -730,20 +1017,19 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if resolutionErr == nil {
 		defer doctorEngine.Close()
 	}
-	printVulkanICDHint(stdout)
-	check("WAYLAND_DISPLAY", envPresent("WAYLAND_DISPLAY"))
-	check("SWAYSOCK", envPresent("SWAYSOCK"))
-	check("XDG_RUNTIME_DIR", envPresent("XDG_RUNTIME_DIR"))
-	if resolutionErr == nil && resolution.Engine == asr.EngineSherpa {
-		check("sherpa build", featureEnabled(buildinfo.SherpaEnabled, "rebuild with -tags sherpa and CGO_ENABLED=1"))
+	for _, result := range doctor.Current().Checks(context.Background(), cfg) {
+		switch result.Level {
+		case doctor.Fail:
+			failures++
+			fmt.Fprintf(stdout, "FAIL %-18s %v\n", result.Name, result.Err)
+		case doctor.Warn:
+			fmt.Fprintf(stdout, "WARN %-18s %s\n", result.Name, result.Detail)
+		case doctor.Info:
+			fmt.Fprintf(stdout, "INFO %-18s %s\n", result.Name, result.Detail)
+		default:
+			fmt.Fprintf(stdout, "OK   %-18s\n", result.Name)
+		}
 	}
-	check("PipeWire build", featureEnabled(buildinfo.PipeWireEnabled, "rebuild with -tags pipewire and libpipewire-0.3 development files"))
-	check("wtype", inject.NewWtype(cfg.Injection).Available(context.Background()))
-	check("PipeWire", pipewire.Check())
-	focus := swayipc.New(cfg.Sway.Socket)
-	fctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	check("Sway IPC", focus.Available(fctx))
-	cancel()
 	if resolutionErr == nil {
 		modelCfg := cfg
 		modelCfg.ASR.Engine = resolution.Engine
@@ -814,16 +1100,6 @@ func printStatus(w io.Writer, st api.Status) {
 	}
 }
 
-func printVulkanICDHint(w io.Writer) {
-	for _, dir := range []string{"/run/opengl-driver/share/vulkan/icd.d", "/usr/share/vulkan/icd.d"} {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			fmt.Fprintf(w, "INFO %-18s found %s\n", "Vulkan ICD", dir)
-			return
-		}
-	}
-	fmt.Fprintf(w, "INFO %-18s no ICD directory found; install a Vulkan driver if GPU ASR is desired\n", "Vulkan ICD")
-}
-
 func printModelCheck(w io.Writer, res model.CheckResult) {
 	if res.Engine != "" {
 		fmt.Fprintf(w, "INFO engine=%s\n", res.Engine)
@@ -878,20 +1154,6 @@ func validateModelForUse(cfg config.Config) error {
 	return nil
 }
 
-func envPresent(name string) error {
-	if os.Getenv(name) == "" {
-		return fmt.Errorf("%s is not set", name)
-	}
-	return nil
-}
-
-func featureEnabled(enabled bool, message string) error {
-	if !enabled {
-		return fmt.Errorf(message)
-	}
-	return nil
-}
-
 func exitForErr(err error) int {
 	switch apperr.Code(err) {
 	case apperr.CodeASRModelMissing, apperr.CodeASRModelInvalid, apperr.CodeASRBackendUnavailable:
@@ -914,24 +1176,4 @@ func normalizeCLIError(code, operation string, err error) error {
 		return err
 	}
 	return apperr.New(code, operation, err)
-}
-
-func peakRSS() uint64 {
-	f, err := os.Open("/proc/self/status")
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "VmHWM:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				kb, _ := strconv.ParseUint(fields[1], 10, 64)
-				return kb * 1024
-			}
-		}
-	}
-	return 0
 }

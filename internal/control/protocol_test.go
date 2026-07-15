@@ -32,6 +32,17 @@ func TestProtocolRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOKDataIsAdditive(t *testing.T) {
+	resp := OKData("request", api.Status{State: api.StateIdle}, map[string]any{"platform": "darwin"})
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"data":{"platform":"darwin"}`)) || resp.Version != Version {
+		t.Fatalf("response = %s", data)
+	}
+}
+
 func TestRequestJSONGolden(t *testing.T) {
 	tests := []struct {
 		name string

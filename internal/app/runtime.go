@@ -16,21 +16,29 @@ import (
 	"waydict/internal/config"
 	"waydict/internal/control"
 	"waydict/internal/focus"
+	"waydict/internal/hotkey"
 	"waydict/internal/inject"
 	svlog "waydict/internal/log"
+	"waydict/internal/loginitem"
 	"waydict/internal/model"
 	"waydict/internal/permissions"
+	"waydict/internal/preferences"
 	"waydict/internal/vad"
 	"waydict/pkg/api"
 )
 
 type PlatformDependencies struct {
 	Name             string
+	Capabilities     ControlCapabilities
 	NewSource        func(config.Audio) (audio.Source, error)
 	NewInjector      func(config.Injection) inject.Injector
 	NewFocusProvider func(config.Focus) focus.Provider
 	PermissionSource permissions.Source
 	DeviceManager    audio.DeviceManager
+	Preferences      preferences.Store
+	Hotkey           hotkey.Service
+	LoginItem        loginitem.Service
+	HostActions      HostActions
 }
 
 type WhisperFactory func(modelPath, provider string, device, threads int) (asr.Engine, error)
@@ -56,22 +64,28 @@ type Runtime struct {
 	cancel       context.CancelFunc
 	opts         RuntimeOptions
 	logger       *slog.Logger
+	logLevel     *slog.LevelVar
 	modelChecker func(string) error
 	closed       bool
 }
 
 func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*Runtime, error) {
+	cfg, preferenceWarning, err := applyRuntimePreferences(ctx, cfg, opts.Platform)
+	if err != nil {
+		return nil, err
+	}
 	if opts.LogLevelOverride != "" {
 		cfg.Daemon.LogLevel = opts.LogLevelOverride
 	}
-	if err := cfg.Validate(); err != nil {
+	validationCapabilities := capabilitySetForRuntime(opts.Platform)
+	if err := cfg.ValidateFor(validationCapabilities); err != nil {
 		return nil, apperr.New(apperr.CodeConfigInvalid, "validate config", err)
 	}
 	if opts.Platform.Name == "" {
 		opts.Platform.Name = "unknown"
 	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
-	logger := svlog.New(cfg.Daemon.LogLevel, nil)
+	logger, logLevel := svlog.NewDynamic(cfg.Daemon.LogLevel, nil)
 	r := &Runtime{
 		Config:   cfg,
 		Platform: opts.Platform,
@@ -79,6 +93,7 @@ func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*R
 		cancel:   cancel,
 		opts:     opts,
 		logger:   logger,
+		logLevel: logLevel,
 	}
 	fail := func(err error) (*Runtime, error) {
 		cancel()
@@ -112,53 +127,76 @@ func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*R
 
 	var provider focus.Provider
 	var focusErr error
-	if cfg.Focus.Enabled || cfg.Focus.Required {
+	focusRequired := cfg.Focus.Required || (cfg.Focus.Enabled && cfg.Focus.Backend != "auto" && cfg.Focus.Backend != "none")
+	if cfg.Focus.Enabled || focusRequired {
 		if opts.Platform.NewFocusProvider != nil {
 			provider = opts.Platform.NewFocusProvider(cfg.Focus)
 		}
 		if provider == nil {
 			focusErr = apperr.New(apperr.CodeFocusUnavailable, "construct focus provider", fmt.Errorf("focus provider factory is unavailable"))
-		} else if cfg.Focus.Required {
+		} else {
 			focusCtx, focusCancel := context.WithTimeout(runtimeCtx, time.Second)
 			focusErr = provider.Available(focusCtx)
 			focusCancel()
 		}
 	}
-	if focusErr != nil && !opts.AllowDegradedStartup {
+	if focusErr != nil && focusRequired && !opts.AllowDegradedStartup {
 		if engine != nil {
 			_ = engine.Close()
 		}
 		return fail(normalizeError(apperr.CodeFocusUnavailable, "check focus provider", focusErr))
 	}
-	if focusErr != nil && provider == nil {
+	if focusErr != nil && focusRequired && provider == nil {
 		provider = runtimeUnavailableFocus{name: opts.Platform.Name, err: focusErr}
+	} else if focusErr != nil && !focusRequired {
+		provider = nil
 	}
 
 	var injector inject.Injector
 	if opts.Platform.NewInjector != nil {
 		injector = opts.Platform.NewInjector(cfg.Injection)
 	}
+	statusCapabilities := opts.Platform.Capabilities
+	if statusCapabilities.Platform == "" {
+		statusCapabilities.Platform = opts.Platform.Name
+	}
+	if statusCapabilities.Host == "" {
+		statusCapabilities.Host = "daemon"
+	}
 	application := New(runtimeCtx, cfg, Dependencies{
-		SourceFactory: func() (audio.Source, error) {
+		AudioSourceFactory: func(audioCfg config.Audio) (audio.Source, error) {
 			if opts.Platform.NewSource == nil {
 				return nil, audio.ErrUnavailable
 			}
-			return opts.Platform.NewSource(cfg.Audio)
+			return opts.Platform.NewSource(audioCfg)
 		},
 		ModelChecker:   r.modelChecker,
 		ConfigReloader: runtimeConfigReloader(opts),
-		Segmenter:      vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
-		Engine:         engine,
-		ASRResolution:  resolution,
+		ConfigValidator: func(cfg config.Config) error {
+			return cfg.ValidateFor(validationCapabilities)
+		},
+		Segmenter:     vad.NewSegmenter(cfg.VAD, cfg.Audio.SampleRate),
+		Engine:        engine,
+		ASRResolution: resolution,
 		ASRFallback: func() (asr.Engine, asr.Resolution, error) {
 			fallback := cfg
 			fallback.ASR.Engine = asr.EngineSherpa
 			fallback.ASR.Provider = asr.ProviderCPU
 			return resolveRuntimeASR(fallback, opts)
 		},
-		Injector: injector,
-		Focus:    provider,
-		Logger:   logger,
+		Injector:         injector,
+		Focus:            provider,
+		Capabilities:     statusCapabilities,
+		PermissionSource: opts.Platform.PermissionSource,
+		DeviceManager:    opts.Platform.DeviceManager,
+		Preferences:      opts.Platform.Preferences,
+		Hotkey:           opts.Platform.Hotkey,
+		LoginItem:        opts.Platform.LoginItem,
+		HostActions:      opts.Platform.HostActions,
+		SetLogLevel: func(level string) {
+			svlog.SetLevel(logLevel, level)
+		},
+		Logger: logger,
 		Shutdown: func() {
 			cancel()
 			if opts.Shutdown != nil {
@@ -167,13 +205,26 @@ func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*R
 		},
 	})
 	r.App = application
+	r.App.hostActions.RestartRuntime = r.restartRuntime
 	r.Server = control.NewServer(cfg.Daemon.Socket, application)
 	if resolutionErr != nil {
 		application.recordError(apiStateForStartup(opts), apperr.Code(resolutionErr), resolutionErr)
 	}
 	if focusErr != nil {
 		focusErr = normalizeError(apperr.CodeFocusUnavailable, "check focus provider", focusErr)
-		application.recordError(apiStateForStartup(opts), apperr.Code(focusErr), focusErr)
+		if focusRequired {
+			application.recordError(apiStateForStartup(opts), apperr.Code(focusErr), focusErr)
+		} else {
+			application.recordWarning(apperr.CodeFocusUnavailable, focusErr.Error())
+			application.mu.Lock()
+			application.status.Focus.Backend = cfg.Focus.Backend
+			application.status.Focus.Available = false
+			application.status.Focus.DegradedReason = focusErr.Error()
+			application.mu.Unlock()
+		}
+	}
+	if preferenceWarning != "" {
+		application.recordWarning(apperr.CodeConfigInvalid, preferenceWarning)
 	}
 	if resolutionErr == nil && cfg.Daemon.PreloadModel && engine != nil {
 		if err := application.loadASR(runtimeCtx, 0); err != nil {
@@ -289,13 +340,16 @@ func (r *Runtime) RecreateAudio(ctx context.Context) error {
 
 func resolveRuntimeASR(cfg config.Config, opts RuntimeOptions) (asr.Engine, asr.Resolution, error) {
 	provider := cfg.ASR.Provider
-	if provider == "" && cfg.ASR.Engine == asr.EngineWhisper {
-		provider = asr.ProviderVulkan
+	preferred := asr.ProviderVulkan
+	if opts.Platform.Name == "darwin" || cfg.Platform() == "darwin" {
+		preferred = asr.ProviderMetal
 	}
 	sherpaCfg := cfg.ASR
 	sherpaCfg.Provider = asr.ProviderCPU
 	deps := asr.ResolverDeps{
-		NewSherpa: func() asr.Engine { return sherpaasr.New(sherpaCfg) },
+		PreferredWhisperProvider: preferred,
+		NumThreads:               cfg.ASR.NumThreads,
+		NewSherpa:                func() asr.Engine { return sherpaasr.New(sherpaCfg) },
 		WhisperModelPath: func() (string, error) {
 			path := cfg.WhisperModelPath()
 			info, err := os.Stat(path)
@@ -309,18 +363,11 @@ func resolveRuntimeASR(cfg config.Config, opts RuntimeOptions) (asr.Engine, asr.
 		},
 	}
 	if opts.ProbeAccelerator != nil {
-		deps.ProbeGPU = func() (string, error) {
-			accelerator, err := opts.ProbeAccelerator(asr.ProviderVulkan, cfg.ASR.GPUDevice)
-			return accelerator.Name, err
-		}
+		deps.ProbeAccelerator = opts.ProbeAccelerator
 	}
 	if opts.NewWhisper != nil {
-		deps.NewWhisper = func(modelPath string, device int, useGPU bool) (asr.Engine, error) {
-			selected := asr.ProviderCPU
-			if useGPU {
-				selected = asr.ProviderVulkan
-			}
-			engine, err := opts.NewWhisper(modelPath, selected, device, cfg.ASR.NumThreads)
+		deps.NewWhisper = func(modelPath, selected string, device, threads int) (asr.Engine, error) {
+			engine, err := opts.NewWhisper(modelPath, selected, device, threads)
 			if err != nil {
 				return nil, normalizeError(apperr.CodeASRBackendUnavailable, "construct whisper engine", err)
 			}
@@ -365,8 +412,191 @@ func runtimeConfigReloader(opts RuntimeOptions) func(context.Context) (config.Co
 		if opts.LogLevelOverride != "" {
 			cfg.Daemon.LogLevel = opts.LogLevelOverride
 		}
+		cfg, _, err = applyRuntimePreferences(ctx, cfg, opts.Platform)
+		if err != nil {
+			return config.Config{}, err
+		}
 		return cfg, nil
 	}
+}
+
+func applyRuntimePreferences(ctx context.Context, cfg config.Config, platform PlatformDependencies) (config.Config, string, error) {
+	if platform.Preferences == nil {
+		return cfg, "", nil
+	}
+	var validDevice func(string) bool
+	if platform.DeviceManager != nil {
+		if devices, err := platform.DeviceManager.Devices(ctx); err == nil {
+			valid := make(map[string]bool, len(devices))
+			for _, device := range devices {
+				valid[device.ID] = device.Connected
+			}
+			validDevice = func(id string) bool { return valid[id] }
+		}
+	}
+	device, audioWarning, err := preferences.AudioDevice(ctx, cfg, platform.Preferences, validDevice)
+	if err != nil {
+		return config.Config{}, "", apperr.New(apperr.CodeConfigInvalid, "load audio preference", err)
+	}
+	cfg.Audio.Device = device.Value
+	mode, hotkeyWarning, err := preferences.HotkeyMode(ctx, cfg, platform.Preferences)
+	if err != nil {
+		return config.Config{}, "", apperr.New(apperr.CodeConfigInvalid, "load hotkey preference", err)
+	}
+	cfg.Hotkey.Mode = mode.Value
+	warning := audioWarning
+	if warning == "" {
+		warning = hotkeyWarning
+	} else if hotkeyWarning != "" {
+		warning += "; " + hotkeyWarning
+	}
+	return cfg, warning, nil
+}
+
+func capabilitySetForRuntime(platform PlatformDependencies) config.CapabilitySet {
+	caps := platform.Capabilities
+	if caps.Platform == "" && caps.AudioBackends == nil && caps.InjectionEngines == nil && caps.FocusBackends == nil && caps.WhisperProviders == nil && caps.SherpaProviders == nil {
+		if platform.Name == "linux" || platform.Name == "darwin" {
+			return config.CapabilitySetFor(platform.Name)
+		}
+		return config.CurrentCapabilitySet()
+	}
+	name := caps.Platform
+	if name == "" {
+		name = platform.Name
+	}
+	return config.CapabilitySet{
+		Platform:         name,
+		AudioBackends:    append([]string(nil), caps.AudioBackends...),
+		InjectionEngines: append([]string(nil), caps.InjectionEngines...),
+		FocusBackends:    append([]string(nil), caps.FocusBackends...),
+		WhisperProviders: append([]string(nil), caps.WhisperProviders...),
+		SherpaProviders:  append([]string(nil), caps.SherpaProviders...),
+		HotkeyAllowed:    name == "darwin",
+	}
+}
+
+func (r *Runtime) restartRuntime(ctx context.Context, next config.Config) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.App == nil {
+		return apperr.New(apperr.CodeInternalError, "restart runtime", fmt.Errorf("runtime is unavailable"))
+	}
+	if err := next.ValidateFor(capabilitySetForRuntime(r.Platform)); err != nil {
+		return apperr.New(apperr.CodeConfigInvalid, "restart runtime", err)
+	}
+	r.App.mu.Lock()
+	busy := r.App.capturing || r.App.pendingASR > 0 || len(r.App.deferred) > 0
+	r.App.mu.Unlock()
+	if busy {
+		return withCode("busy", fmt.Errorf("cannot restart while dictation is active"))
+	}
+	engine, resolution, err := resolveRuntimeASR(next, r.opts)
+	if err != nil {
+		return err
+	}
+	checker := runtimeModelChecker(next)
+	if resolution.Engine == asr.EngineSherpa {
+		if err := validateResolvedSherpaConfig(next); err != nil {
+			_ = engine.Close()
+			return err
+		}
+		if next.Daemon.PreloadModel {
+			if err := checker(resolution.Engine); err != nil {
+				_ = engine.Close()
+				return err
+			}
+		}
+	}
+	if next.Daemon.PreloadModel && engine != nil {
+		if err := engine.Load(ctx); err != nil {
+			_ = engine.Close()
+			return normalizeError(apperr.CodeASRModelInvalid, "restart runtime", err)
+		}
+	}
+	var provider focus.Provider
+	var focusErr error
+	focusRequired := next.Focus.Required || (next.Focus.Enabled && next.Focus.Backend != "auto" && next.Focus.Backend != "none")
+	if next.Focus.Enabled && r.Platform.NewFocusProvider != nil {
+		provider = r.Platform.NewFocusProvider(next.Focus)
+	}
+	if next.Focus.Enabled {
+		if provider == nil {
+			focusErr = apperr.New(apperr.CodeFocusUnavailable, "restart runtime", fmt.Errorf("focus provider is unavailable"))
+		} else {
+			focusCtx, cancel := context.WithTimeout(ctx, time.Second)
+			focusErr = provider.Available(focusCtx)
+			cancel()
+		}
+	}
+	if focusErr != nil && focusRequired {
+		_ = engine.Close()
+		return normalizeError(apperr.CodeFocusUnavailable, "restart runtime", focusErr)
+	}
+	if focusErr != nil {
+		provider = nil
+	}
+	var injector inject.Injector
+	if r.Platform.NewInjector != nil {
+		injector = r.Platform.NewInjector(next.Injection)
+	}
+	segmenter := vad.NewSegmenter(next.VAD, next.Audio.SampleRate)
+
+	r.App.mu.Lock()
+	oldEngine := r.App.engine
+	oldSource := r.App.source
+	r.App.cfg = next
+	r.App.engine = engine
+	r.App.asrResolution = resolution
+	r.App.modelChecker = checker
+	r.App.asrFallback = func() (asr.Engine, asr.Resolution, error) {
+		fallback := next
+		fallback.ASR.Engine = asr.EngineSherpa
+		fallback.ASR.Provider = asr.ProviderCPU
+		return resolveRuntimeASR(fallback, r.opts)
+	}
+	r.App.segmenter = segmenter
+	r.App.injector = injector
+	r.App.focus = provider
+	r.App.source = nil
+	if provider != nil {
+		r.App.guard = focus.NewGuard(provider, focus.Policy(next.EffectiveFocusPolicy()))
+	} else {
+		r.App.guard = nil
+	}
+	r.App.post = inject.NewPostProcessor(next.PostProcess, next.Injection.AppendSpace)
+	r.App.status.Audio.Backend = next.Audio.Backend
+	r.App.status.Audio.SampleRate = next.Audio.SampleRate
+	r.App.status.Audio.DeviceID = next.Audio.Device
+	r.App.status.Audio.Capturing = false
+	r.App.status.VAD.Engine = segmenter.Name()
+	r.App.status.ASR = api.ASRStatus{
+		Engine:           next.ASR.Engine,
+		Model:            resolvedModelName(next, resolution),
+		Provider:         next.ASR.Provider,
+		ResolvedEngine:   resolution.Engine,
+		ResolvedProvider: resolution.Provider,
+		GPUName:          resolution.GPUName,
+		FallbackReason:   resolution.FallbackReason,
+		NumThreads:       next.ASR.NumThreads,
+		Loaded:           engine != nil && engine.Loaded(),
+	}
+	r.App.status.Injection.Engine = injectorBackend(injector, next.Injection.Engine)
+	r.App.status.Focus = api.FocusStatus{Backend: focusBackend(provider), Available: provider != nil, Sway: provider != nil && provider.Backend() == "sway"}
+	if focusErr != nil {
+		r.App.status.Focus.Backend = next.Focus.Backend
+		r.App.status.Focus.DegradedReason = focusErr.Error()
+	}
+	r.App.mu.Unlock()
+
+	r.Config = next
+	r.modelChecker = checker
+	svlog.SetLevel(r.logLevel, next.Daemon.LogLevel)
+	closeSource(oldSource)
+	if oldEngine != nil {
+		_ = oldEngine.Close()
+	}
+	return nil
 }
 
 func (r *Runtime) logStartup() {

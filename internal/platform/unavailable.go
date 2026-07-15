@@ -13,7 +13,7 @@ import (
 
 func unavailableServices(name string) Services {
 	return Services{
-		Capabilities: Capabilities{OS: name, Host: "stub"},
+		Capabilities: Capabilities{OS: name, Host: "daemon"},
 		NewAudio: func(config.Audio) (audio.Source, error) {
 			return nil, audio.ErrUnavailable
 		},

@@ -9,6 +9,7 @@ const (
 	EngineWhisper = "whisper-cpp"
 
 	ProviderCPU    = "cpu"
+	ProviderMetal  = "metal"
 	ProviderVulkan = "vulkan"
 )
 
@@ -34,10 +35,12 @@ type BackendReporter interface {
 // ResolverDeps supplies constructors and probes so resolution stays testable and
 // free of cgo. NewWhisper is nil when built without the whispercpp tag.
 type ResolverDeps struct {
-	NewSherpa        func() Engine
-	NewWhisper       func(modelPath string, device int, useGPU bool) (Engine, error)
-	ProbeGPU         func() (name string, err error)
-	WhisperModelPath func() (string, error) // installed ggml model, or why not
+	PreferredWhisperProvider string
+	NumThreads               int
+	NewSherpa                func() Engine
+	NewWhisper               func(modelPath, provider string, device, threads int) (Engine, error)
+	ProbeAccelerator         func(provider string, device int) (Accelerator, error)
+	WhisperModelPath         func() (string, error) // installed ggml model, or why not
 }
 
 // Resolve picks the engine per the configured asr.engine value.
@@ -60,7 +63,7 @@ func Resolve(engine, provider string, device int, deps ResolverDeps) (Engine, Re
 		return eng, res, nil
 
 	case EngineAuto:
-		eng, res, err := resolveWhisper(ProviderVulkan, device, deps)
+		eng, res, err := resolveWhisper(provider, device, deps)
 		if err != nil {
 			return deps.NewSherpa(), Resolution{
 				Engine:         EngineSherpa,
@@ -86,19 +89,24 @@ func resolveWhisper(provider string, device int, deps ResolverDeps) (Engine, Res
 	if err != nil {
 		return nil, Resolution{}, fmt.Errorf("whisper model unavailable: %w", err)
 	}
-	res := Resolution{Engine: EngineWhisper, Provider: provider, Device: device}
-	useGPU := provider != ProviderCPU
-	if useGPU {
-		if deps.ProbeGPU == nil {
-			return nil, Resolution{}, fmt.Errorf("gpu probe not wired")
-		}
-		name, err := deps.ProbeGPU()
-		if err != nil {
-			return nil, Resolution{}, fmt.Errorf("no usable GPU: %w", err)
-		}
-		res.GPUName = name
+	if provider == "" {
+		provider = deps.PreferredWhisperProvider
 	}
-	eng, err := deps.NewWhisper(modelPath, device, useGPU)
+	if provider == "" {
+		provider = ProviderCPU
+	}
+	res := Resolution{Engine: EngineWhisper, Provider: provider, Device: device}
+	if provider != ProviderCPU {
+		if deps.ProbeAccelerator == nil {
+			return nil, Resolution{}, fmt.Errorf("%s accelerator probe not wired", provider)
+		}
+		accelerator, err := deps.ProbeAccelerator(provider, device)
+		if err != nil {
+			return nil, Resolution{}, fmt.Errorf("no usable %s accelerator: %w", provider, err)
+		}
+		res.GPUName = accelerator.Name
+	}
+	eng, err := deps.NewWhisper(modelPath, provider, device, deps.NumThreads)
 	if err != nil {
 		return nil, Resolution{}, fmt.Errorf("whisper-cpp init: %w", err)
 	}
