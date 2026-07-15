@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "id": "request-stop",
+  "command": "stop",
+  "args": {
+    "commit": true,
+    "discard": false
+  }
+}

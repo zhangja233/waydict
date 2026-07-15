@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "id": "request-start",
+  "command": "start",
+  "args": {
+    "mode": "hold"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "state": "recognizing",
+  "mode": "hold",
+  "audio": {
+    "backend": "pipewire",
+    "sample_rate": 16000,
+    "level_dbfs": -18.75,
+    "overruns": 7,
+    "capturing": true
+  },
+  "vad": {
+    "engine": "silero"
+  },
+  "asr": {
+    "engine": "auto",
+    "model": "parakeet-tdt-0.6b-v3-int8",
+    "provider": "cpu",
+    "resolved_engine": "sherpa-onnx",
+    "resolved_provider": "cpu",
+    "gpu_name": "Vulkan device 0",
+    "fallback_reason": "preferred engine unavailable",
+    "num_threads": 4,
+    "loaded": true,
+    "last_rtf": 0.42
+  },
+  "injection": {
+    "engine": "wtype",
+    "available": true,
+    "last_error": "previous injection failed"
+  },
+  "focus": {
+    "sway": true,
+    "focused_id": 42,
+    "focused_name": "editor",
+    "app_id": "example.editor",
+    "class": "Editor",
+    "workspace": "2",
+    "output": "DP-1"
+  },
+  "last_error": {
+    "code": "recognition_failed",
+    "message": "recognition failed"
+  },
+  "last_warning": {
+    "code": "capture_overrun",
+    "message": "audio was dropped"
+  },
+  "last_transcript_redacted": true,
+  "last_uninjected_text": "\u003credacted\u003e",
+  "last_transcript": "\u003credacted\u003e",
+  "uptime_seconds": 123.5
+}

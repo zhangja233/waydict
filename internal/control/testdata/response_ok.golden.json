@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "id": "request-ok",
+  "ok": true,
+  "error": null,
+  "status": {
+    "state": "listening",
+    "mode": null,
+    "audio": {
+      "backend": "",
+      "sample_rate": 0,
+      "level_dbfs": 0,
+      "overruns": 0,
+      "capturing": false
+    },
+    "vad": {
+      "engine": ""
+    },
+    "asr": {
+      "engine": "",
+      "model": "",
+      "provider": "",
+      "resolved_engine": "",
+      "resolved_provider": "",
+      "gpu_name": "",
+      "fallback_reason": "",
+      "num_threads": 0,
+      "loaded": false,
+      "last_rtf": 0
+    },
+    "injection": {
+      "engine": "",
+      "available": false
+    },
+    "focus": {
+      "sway": false
+    },
+    "last_error": null,
+    "last_transcript_redacted": true
+  }
+}

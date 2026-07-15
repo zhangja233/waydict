@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "id": "request-shutdown",
+  "command": "shutdown",
+  "args": null
+}

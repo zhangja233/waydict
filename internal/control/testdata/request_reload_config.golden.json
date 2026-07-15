@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "id": "request-reload",
+  "command": "reload_config",
+  "args": null
+}
