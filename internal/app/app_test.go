@@ -122,6 +122,69 @@ func TestWhisperBackendDowngradeUpdatesStatus(t *testing.T) {
 	}
 }
 
+func TestForcedMetalBackendConfirmationFailsAndCloses(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineWhisper
+	cfg.ASR.Provider = asr.ProviderMetal
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &backendEngine{provider: asr.ProviderCPU, backend: "CPU"}
+	app := New(ctx, cfg, Dependencies{
+		Engine:        engine,
+		ASRResolution: asr.Resolution{Engine: asr.EngineWhisper, Provider: asr.ProviderMetal},
+	})
+	err := app.loadASR(ctx, 0)
+	if apperr.Code(err) != apperr.CodeASRBackendUnavailable {
+		t.Fatalf("loadASR() error = %v, want %s", err, apperr.CodeASRBackendUnavailable)
+	}
+	if engine.Loaded() {
+		t.Fatal("unconfirmed Metal engine was not closed")
+	}
+}
+
+func TestAutoMetalBackendConfirmationFallsBackToSherpa(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineAuto
+	cfg.ASR.Provider = ""
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	whisper := &backendEngine{provider: asr.ProviderCPU, backend: "CPU"}
+	sherpa := &FakeEngine{}
+	app := New(ctx, cfg, Dependencies{
+		Engine:        whisper,
+		ASRResolution: asr.Resolution{Engine: asr.EngineWhisper, Provider: asr.ProviderMetal},
+		ASRFallback: func() (asr.Engine, asr.Resolution, error) {
+			return sherpa, asr.Resolution{Engine: asr.EngineSherpa, Provider: asr.ProviderCPU}, nil
+		},
+	})
+	if err := app.loadASR(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	status := app.Status(ctx).ASR
+	if whisper.Loaded() || app.engine != sherpa || status.ResolvedEngine != asr.EngineSherpa || status.ResolvedProvider != asr.ProviderCPU || status.FallbackReason == "" {
+		t.Fatalf("whisper loaded=%t engine=%T status=%+v", whisper.Loaded(), app.engine, status)
+	}
+}
+
+func TestMetalBackendConfirmationUsesDeviceName(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ASR.Engine = asr.EngineAuto
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	engine := &backendEngine{provider: asr.ProviderMetal, backend: "Apple M4", gpu: true}
+	app := New(ctx, cfg, Dependencies{
+		Engine:        engine,
+		ASRResolution: asr.Resolution{Engine: asr.EngineWhisper, Provider: asr.ProviderMetal, GPUName: "provisional"},
+	})
+	if err := app.loadASR(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	status := app.Status(ctx).ASR
+	if status.ResolvedProvider != asr.ProviderMetal || status.GPUName != "Apple M4" {
+		t.Fatalf("ASR status = %+v, want confirmed Metal device", status)
+	}
+}
+
 func TestAutoWhisperLoadFailureFallsBackToSherpa(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.NumThreads = 1
@@ -1401,8 +1464,9 @@ type recordingEngine struct {
 
 type backendEngine struct {
 	FakeEngine
-	backend string
-	gpu     bool
+	provider string
+	backend  string
+	gpu      bool
 }
 
 type loadErrorEngine struct {
@@ -1421,8 +1485,8 @@ func (e *loadErrorEngine) Transcribe(context.Context, asr.AudioSegment) (asr.Tra
 	return asr.Transcript{}, e.err
 }
 
-func (e *backendEngine) ActiveBackend() (string, bool) {
-	return e.backend, e.gpu
+func (e *backendEngine) ActiveBackend() asr.BackendReport {
+	return asr.BackendReport{Provider: e.provider, DeviceName: e.backend, GPU: e.gpu}
 }
 
 func (r *recordingEngine) Transcribe(ctx context.Context, seg asr.AudioSegment) (asr.Transcript, error) {

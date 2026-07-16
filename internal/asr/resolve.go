@@ -25,12 +25,24 @@ type Resolution struct {
 	FallbackReason string // set when auto resolved away from the GPU engine
 }
 
-// BackendReporter is optionally implemented by engines that can report which
-// backend the native library actually selected after Load. Callers use it to
-// confirm (or refute) a provisional GPU Resolution before surfacing it.
-type BackendReporter interface {
-	ActiveBackend() (name string, gpu bool)
+type BackendReport struct {
+	Provider   string
+	DeviceName string
+	GPU        bool
 }
+
+// BackendReporter reports the backend selected after Load.
+type BackendReporter interface {
+	ActiveBackend() BackendReport
+}
+
+type BackendConfirmationAction uint8
+
+const (
+	BackendKeep BackendConfirmationAction = iota
+	BackendFallback
+	BackendUnavailable
+)
 
 // ResolverDeps supplies constructors and probes so resolution stays testable and
 // free of cgo. NewWhisper is nil when built without the whispercpp tag.
@@ -111,4 +123,40 @@ func resolveWhisper(provider string, device int, deps ResolverDeps) (Engine, Res
 		return nil, Resolution{}, fmt.Errorf("whisper-cpp init: %w", err)
 	}
 	return eng, res, nil
+}
+
+// ConfirmWhisperBackend applies the post-load provider policy without cgo.
+func ConfirmWhisperBackend(configuredEngine, configuredProvider string, resolution Resolution, report BackendReport) (Resolution, BackendConfirmationAction) {
+	if resolution.Engine != EngineWhisper {
+		return resolution, BackendKeep
+	}
+	if resolution.Provider == ProviderCPU {
+		resolution.GPUName = ""
+		return resolution, BackendKeep
+	}
+	if resolution.Provider == ProviderMetal {
+		if report.GPU && report.Provider == ProviderMetal {
+			resolution.GPUName = report.DeviceName
+			return resolution, BackendKeep
+		}
+		resolution.Provider = ProviderCPU
+		resolution.GPUName = ""
+		switch {
+		case configuredProvider == ProviderMetal:
+			return resolution, BackendUnavailable
+		case configuredEngine == EngineWhisper && configuredProvider == "":
+			return resolution, BackendUnavailable
+		case configuredEngine == EngineAuto && configuredProvider == "":
+			return resolution, BackendFallback
+		default:
+			return resolution, BackendUnavailable
+		}
+	}
+	if report.GPU {
+		resolution.GPUName = report.DeviceName
+		return resolution, BackendKeep
+	}
+	resolution.Provider = ProviderCPU
+	resolution.GPUName = ""
+	return resolution, BackendKeep
 }

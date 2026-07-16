@@ -114,6 +114,8 @@ func (c *appController) run(ctx context.Context) {
 	rt, err := app.NewRuntime(ctx, cfg, app.RuntimeOptions{
 		Platform:             dependencies,
 		AllowDegradedStartup: true,
+		NewWhisper:           appWhisperFactory,
+		ProbeAccelerator:     appAcceleratorProbe,
 		Shutdown:             c.cancel,
 	})
 	if err != nil {

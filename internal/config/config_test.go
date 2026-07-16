@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"waydict/internal/asr"
@@ -330,6 +331,66 @@ func TestValidateASREngineMatrix(t *testing.T) {
 				t.Fatalf("ValidateASR() error = %v, wantErr %t", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateASRDarwinProviderMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		engine   string
+		provider string
+		device   int
+		wantErr  bool
+	}{
+		{name: "auto empty", engine: asr.EngineAuto},
+		{name: "auto metal", engine: asr.EngineAuto, provider: asr.ProviderMetal},
+		{name: "auto cpu", engine: asr.EngineAuto, provider: asr.ProviderCPU},
+		{name: "auto vulkan", engine: asr.EngineAuto, provider: asr.ProviderVulkan, wantErr: true},
+		{name: "whisper empty", engine: asr.EngineWhisper},
+		{name: "whisper metal", engine: asr.EngineWhisper, provider: asr.ProviderMetal},
+		{name: "whisper cpu", engine: asr.EngineWhisper, provider: asr.ProviderCPU},
+		{name: "whisper vulkan", engine: asr.EngineWhisper, provider: asr.ProviderVulkan, wantErr: true},
+		{name: "sherpa empty", engine: asr.EngineSherpa},
+		{name: "sherpa cpu", engine: asr.EngineSherpa, provider: asr.ProviderCPU},
+		{name: "sherpa metal", engine: asr.EngineSherpa, provider: asr.ProviderMetal, wantErr: true},
+		{name: "sherpa vulkan", engine: asr.EngineSherpa, provider: asr.ProviderVulkan, wantErr: true},
+		{name: "auto default metal device one", engine: asr.EngineAuto, device: 1, wantErr: true},
+		{name: "whisper default metal device one", engine: asr.EngineWhisper, device: 1, wantErr: true},
+		{name: "explicit metal device one", engine: asr.EngineAuto, provider: asr.ProviderMetal, device: 1, wantErr: true},
+		{name: "cpu ignores device", engine: asr.EngineAuto, provider: asr.ProviderCPU, device: 1},
+	}
+	capabilities := CapabilitySetFor("darwin")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultsFor("darwin", testPlatformPaths(t, "darwin"))
+			cfg.ASR.Engine = tt.engine
+			cfg.ASR.Provider = tt.provider
+			cfg.ASR.GPUDevice = tt.device
+			cfg.ASR.NumThreads = 1
+			err := cfg.ValidateASRFor(capabilities)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateASRFor() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if tt.device != 0 && tt.wantErr && tt.provider != asr.ProviderVulkan && tt.engine != asr.EngineSherpa && !strings.Contains(err.Error(), "must equal 0 for metal") {
+				t.Fatalf("error = %v, want Metal device diagnostic", err)
+			}
+		})
+	}
+}
+
+func TestPreferredWhisperProviderFor(t *testing.T) {
+	tests := []struct {
+		platform string
+		want     string
+	}{
+		{platform: "darwin", want: asr.ProviderMetal},
+		{platform: "linux", want: asr.ProviderVulkan},
+		{platform: "other", want: ""},
+	}
+	for _, tt := range tests {
+		if got := PreferredWhisperProviderFor(tt.platform); got != tt.want {
+			t.Errorf("PreferredWhisperProviderFor(%q) = %q, want %q", tt.platform, got, tt.want)
+		}
 	}
 }
 

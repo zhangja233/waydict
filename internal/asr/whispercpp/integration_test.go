@@ -62,11 +62,11 @@ func TestIntegrationTranscribe(t *testing.T) {
 	if transcript.DecodeDuration <= 0 || transcript.RealTimeFactor <= 0 {
 		t.Fatalf("decode duration = %s, RTF = %f", transcript.DecodeDuration, transcript.RealTimeFactor)
 	}
-	name, gpu := engine.ActiveBackend()
-	if name == "" {
+	report := engine.ActiveBackend()
+	if report.DeviceName == "" {
 		t.Fatal("native logs did not identify the active backend")
 	}
-	if wantGPU := os.Getenv("WAYDICT_TEST_WHISPER_GPU") == "1"; gpu != wantGPU {
-		t.Fatalf("active backend = (%q, %t), want gpu=%t", name, gpu, wantGPU)
+	if wantGPU := os.Getenv("WAYDICT_TEST_WHISPER_GPU") == "1"; report.GPU != wantGPU {
+		t.Fatalf("active backend = %+v, want gpu=%t", report, wantGPU)
 	}
 }

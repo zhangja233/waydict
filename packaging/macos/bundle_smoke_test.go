@@ -32,6 +32,8 @@ func TestDevelopmentBundle(t *testing.T) {
 		"Contents/Info.plist",
 		"Contents/PkgInfo",
 		"Contents/Frameworks",
+		"Contents/Frameworks/libonnxruntime.1.24.4.dylib",
+		"Contents/Frameworks/libsherpa-onnx-c-api.dylib",
 		"Contents/MacOS/waydict-app",
 		"Contents/MacOS/waydict",
 		"Contents/Resources/Waydict.icns",
@@ -51,6 +53,19 @@ func TestDevelopmentBundle(t *testing.T) {
 		info, err := os.Stat(filepath.Join(app, relative))
 		if err == nil && info.Mode()&0111 == 0 {
 			t.Errorf("%s is not executable", relative)
+		}
+		binary := filepath.Join(app, relative)
+		assertNoNonSystemAbsoluteDependencies(t, binary)
+		data, err := exec.Command("otool", "-l", binary).CombinedOutput()
+		if err != nil || !bytes.Contains(data, []byte("@executable_path/../Frameworks")) {
+			t.Errorf("%s missing bundle Frameworks rpath: %v\n%s", relative, err, data)
+		}
+	}
+	for _, relative := range []string{"Contents/Frameworks/libonnxruntime.1.24.4.dylib", "Contents/Frameworks/libsherpa-onnx-c-api.dylib"} {
+		path := filepath.Join(app, relative)
+		assertNoNonSystemAbsoluteDependencies(t, path)
+		if data, err := exec.Command("codesign", "--verify", "--strict", path).CombinedOutput(); err != nil {
+			t.Errorf("verify %s signature: %v\n%s", relative, err, data)
 		}
 	}
 
@@ -99,6 +114,26 @@ func TestDevelopmentBundle(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte("com.apple.security.app-sandbox")) {
 		t.Error("App Sandbox entitlement must not be present")
+	}
+}
+
+func assertNoNonSystemAbsoluteDependencies(t *testing.T, path string) {
+	t.Helper()
+	data, err := exec.Command("otool", "-L", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect %s dependencies: %v\n%s", path, err, data)
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		if i == 0 {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !filepath.IsAbs(fields[0]) {
+			continue
+		}
+		if !strings.HasPrefix(fields[0], "/System/Library/") && !strings.HasPrefix(fields[0], "/usr/lib/") {
+			t.Errorf("%s retains absolute non-system dependency %s", path, fields[0])
+		}
 	}
 }
 

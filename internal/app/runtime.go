@@ -356,10 +356,11 @@ func (r *Runtime) RecreateAudio(ctx context.Context) error {
 
 func resolveRuntimeASR(cfg config.Config, opts RuntimeOptions) (asr.Engine, asr.Resolution, error) {
 	provider := cfg.ASR.Provider
-	preferred := asr.ProviderVulkan
-	if opts.Platform.Name == "darwin" || cfg.Platform() == "darwin" {
-		preferred = asr.ProviderMetal
+	platform := cfg.Platform()
+	if opts.Platform.Name != "" {
+		platform = opts.Platform.Name
 	}
+	preferred := config.PreferredWhisperProviderFor(platform)
 	sherpaCfg := cfg.ASR
 	sherpaCfg.Provider = asr.ProviderCPU
 	deps := asr.ResolverDeps{

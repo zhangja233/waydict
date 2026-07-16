@@ -1,4 +1,4 @@
-//go:build whispercpp && cgo
+//go:build linux && whispercpp && cgo
 
 package main
 

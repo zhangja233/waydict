@@ -18,6 +18,16 @@ func CurrentCapabilitySet() CapabilitySet {
 	return CapabilitySetFor(runtime.GOOS)
 }
 
+func PreferredWhisperProviderFor(platform string) string {
+	providers := CapabilitySetFor(platform).WhisperProviders
+	for _, provider := range providers {
+		if provider != "cpu" {
+			return provider
+		}
+	}
+	return preferredProvider(providers)
+}
+
 func CapabilitySetFor(platform string) CapabilitySet {
 	switch platform {
 	case "darwin":

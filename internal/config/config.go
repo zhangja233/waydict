@@ -503,16 +503,20 @@ func (c Config) ValidateASRFor(capabilities CapabilitySet) error {
 		if err := validateWhisperModelName(c.ASR.WhisperModel); err != nil {
 			return err
 		}
-		if c.ASR.GPUDevice < 0 {
-			return fmt.Errorf("asr.gpu_device must not be negative")
+		if err := validateWhisperDevice(provider, c.ASR.GPUDevice); err != nil {
+			return err
 		}
 		return nil
 	case asr.EngineAuto:
 		if c.ASR.Provider != "" && !contains(capabilities.WhisperProviders, c.ASR.Provider) {
 			return fmt.Errorf("asr.provider %q is unavailable for auto on %s", c.ASR.Provider, capabilities.Platform)
 		}
-		if c.ASR.GPUDevice < 0 {
-			return fmt.Errorf("asr.gpu_device must not be negative")
+		provider := c.ASR.Provider
+		if provider == "" {
+			provider = preferredProvider(capabilities.WhisperProviders)
+		}
+		if err := validateWhisperDevice(provider, c.ASR.GPUDevice); err != nil {
+			return err
 		}
 		if c.ASR.WhisperModel != "" {
 			if err := validateWhisperModelName(c.ASR.WhisperModel); err != nil {
@@ -523,6 +527,16 @@ func (c Config) ValidateASRFor(capabilities CapabilitySet) error {
 	default:
 		return fmt.Errorf("asr.engine must be auto, sherpa-onnx, or whisper-cpp")
 	}
+}
+
+func validateWhisperDevice(provider string, device int) error {
+	if device < 0 {
+		return fmt.Errorf("asr.gpu_device must not be negative")
+	}
+	if provider == asr.ProviderMetal && device != 0 {
+		return fmt.Errorf("asr.gpu_device must equal 0 for metal")
+	}
+	return nil
 }
 
 // Bare file stem only: the name is joined under the models root, so any

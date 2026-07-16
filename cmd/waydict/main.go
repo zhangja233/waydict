@@ -584,10 +584,7 @@ var (
 
 func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 	provider := cfg.ASR.Provider
-	preferred := asr.ProviderVulkan
-	if cfg.Platform() == "darwin" {
-		preferred = asr.ProviderMetal
-	}
+	preferred := config.PreferredWhisperProviderFor(cfg.Platform())
 	sherpaCfg := cfg.ASR
 	sherpaCfg.Provider = asr.ProviderCPU
 	deps := asr.ResolverDeps{
@@ -635,31 +632,68 @@ func loadResolvedASR(ctx context.Context, cfg config.Config, engine asr.Engine, 
 		if cfg.ASR.Engine != asr.EngineAuto || resolution.Engine != asr.EngineWhisper {
 			return engine, resolution, err
 		}
-		fmt.Fprintf(stderr, "whisper-cpp load failed: %v\n", err)
 		_ = engine.Close()
-		fallbackCfg := cfg
-		fallbackCfg.ASR.Engine = asr.EngineSherpa
-		fallbackCfg.ASR.Provider = asr.ProviderCPU
-		fallback, fallbackResolution, fallbackErr := resolveASREngine(fallbackCfg)
-		if fallbackErr != nil {
-			return engine, resolution, fmt.Errorf("sherpa fallback resolution failed: %w", fallbackErr)
-		}
-		fallbackResolution.FallbackReason = fmt.Sprintf("whisper-cpp load failed: %v", err)
-		fmt.Fprintf(stderr, "falling back to sherpa-onnx: %s\n", fallbackResolution.FallbackReason)
-		engine = fallback
-		resolution = fallbackResolution
-		if configErr := validateResolvedSherpaConfig(fallbackCfg); configErr != nil {
-			return engine, resolution, configErr
-		}
-		if checkErr := validateModelForUseFn(fallbackCfg); checkErr != nil {
-			return engine, resolution, checkErr
-		}
-		if fallbackErr = engine.Load(ctx); fallbackErr != nil {
-			return engine, resolution, fmt.Errorf("sherpa fallback load failed: %w", fallbackErr)
-		}
+		reason := fmt.Sprintf("whisper-cpp load failed: %v", err)
+		return loadSherpaFallback(ctx, cfg, reason, stderr)
 	}
-	resolution = confirmResolvedBackend(engine, resolution, stderr)
+	if resolution.Engine != asr.EngineWhisper {
+		return engine, resolution, nil
+	}
+	report := asr.BackendReport{}
+	if reporter, ok := engine.(asr.BackendReporter); ok {
+		report = reporter.ActiveBackend()
+	}
+	confirmed, action := asr.ConfirmWhisperBackend(cfg.ASR.Engine, cfg.ASR.Provider, resolution, report)
+	switch action {
+	case asr.BackendFallback:
+		reason := cliBackendConfirmationFailure(resolution.Provider, report)
+		_ = engine.Close()
+		return loadSherpaFallback(ctx, cfg, reason, stderr)
+	case asr.BackendUnavailable:
+		reason := cliBackendConfirmationFailure(resolution.Provider, report)
+		_ = engine.Close()
+		return engine, confirmed, apperr.New(apperr.CodeASRBackendUnavailable, "confirm whisper backend", errors.New(reason))
+	default:
+		if resolution.Provider != asr.ProviderCPU && confirmed.Provider == asr.ProviderCPU {
+			fmt.Fprintf(stderr, "whisper-cpp backend downgraded to cpu (requested %s, reported backend %q)\n", resolution.Provider, report.DeviceName)
+		}
+		resolution = confirmed
+	}
 	return engine, resolution, nil
+}
+
+func loadSherpaFallback(ctx context.Context, cfg config.Config, reason string, stderr io.Writer) (asr.Engine, asr.Resolution, error) {
+	fallbackCfg := cfg
+	fallbackCfg.ASR.Engine = asr.EngineSherpa
+	fallbackCfg.ASR.Provider = asr.ProviderCPU
+	fallback, resolution, err := resolveASREngine(fallbackCfg)
+	if err != nil {
+		return nil, asr.Resolution{}, fmt.Errorf("%s; sherpa fallback resolution failed: %w", reason, err)
+	}
+	resolution.FallbackReason = reason
+	fmt.Fprintf(stderr, "%s\n", reason)
+	fmt.Fprintf(stderr, "falling back to sherpa-onnx: %s\n", reason)
+	if err := validateResolvedSherpaConfig(fallbackCfg); err != nil {
+		return fallback, resolution, err
+	}
+	if err := validateModelForUseFn(fallbackCfg); err != nil {
+		return fallback, resolution, err
+	}
+	if err := fallback.Load(ctx); err != nil {
+		return fallback, resolution, fmt.Errorf("sherpa fallback load failed: %w", err)
+	}
+	return fallback, resolution, nil
+}
+
+func cliBackendConfirmationFailure(provider string, report asr.BackendReport) string {
+	reported := report.Provider
+	if reported == "" {
+		reported = "unconfirmed"
+	}
+	if report.DeviceName != "" {
+		reported += " (" + report.DeviceName + ")"
+	}
+	return fmt.Sprintf("whisper-cpp requested %s but native diagnostics reported %s", provider, reported)
 }
 
 func validateResolvedASRForUse(cfg config.Config, resolution asr.Resolution) error {
@@ -679,25 +713,6 @@ func validateResolvedSherpaConfig(cfg config.Config) error {
 	cfg.ASR.Engine = asr.EngineSherpa
 	cfg.ASR.Provider = asr.ProviderCPU
 	return cfg.ValidateASR()
-}
-
-func confirmResolvedBackend(engine asr.Engine, resolution asr.Resolution, stderr io.Writer) asr.Resolution {
-	if resolution.Engine != asr.EngineWhisper {
-		return resolution
-	}
-	reporter, ok := engine.(asr.BackendReporter)
-	name, gpu := "", false
-	if ok {
-		name, gpu = reporter.ActiveBackend()
-	}
-	if gpu {
-		resolution.GPUName = name
-	} else if resolution.Provider != asr.ProviderCPU {
-		fmt.Fprintf(stderr, "whisper-cpp backend downgraded to cpu (requested %s, reported backend %q)\n", resolution.Provider, name)
-		resolution.Provider = asr.ProviderCPU
-		resolution.GPUName = ""
-	}
-	return resolution
 }
 
 func prepareInjection(ctx context.Context, cfg config.Config, stderr io.Writer) (*preparedInjection, error) {

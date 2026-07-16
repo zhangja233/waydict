@@ -3,7 +3,6 @@
 package whispercpp
 
 /*
-#cgo pkg-config: whisper
 #include <stdlib.h>
 #include "bridge.h"
 */
@@ -55,7 +54,7 @@ func (c *logCapture) observe(text string) {
 	c.mu.Unlock()
 }
 
-func (c *logCapture) backend() (string, bool) {
+func (c *logCapture) backend() asr.BackendReport {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.detector.backend()
@@ -97,9 +96,9 @@ func (e *Engine) Loaded() bool {
 	return e.loaded.Load()
 }
 
-func (e *Engine) ActiveBackend() (string, bool) {
+func (e *Engine) ActiveBackend() asr.BackendReport {
 	if !e.loaded.Load() {
-		return "", false
+		return asr.BackendReport{}
 	}
 	return e.logs.backend()
 }

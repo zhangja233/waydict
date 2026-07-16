@@ -47,8 +47,8 @@ func (e *Engine) Transcribe(context.Context, asr.AudioSegment) (asr.Transcript, 
 	return asr.Transcript{}, buildSupportError()
 }
 
-func (e *Engine) ActiveBackend() (string, bool) {
-	return "", false
+func (e *Engine) ActiveBackend() asr.BackendReport {
+	return asr.BackendReport{}
 }
 
 func buildSupportError() error {
