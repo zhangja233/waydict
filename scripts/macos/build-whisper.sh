@@ -10,6 +10,18 @@ build_arch() {
 	local build_dir="$root/build/whisper-cmake/$arch"
 	local prefix="$root/build/whisper/$arch"
 	local accelerate_compat="-UACCELERATE_NEW_LAPACK -UACCELERATE_LAPACK_ILP64"
+	local valid=1
+
+	if [[ -f "$prefix/lib/libwhisper.a" ]]; then
+		while IFS= read -r archive; do
+			[[ "$(lipo -archs "$archive")" == "$arch" ]] || valid=0
+		done < <(find "$prefix/lib" -maxdepth 1 -type f -name '*.a' -print)
+		if [[ "$valid" == 1 ]] && ! nm -u "$prefix"/lib/*.a 2>/dev/null | grep -Eq '\$(NEWLAPACK|ILP64)'; then
+			echo "whisper.cpp $arch: cached"
+			find "$prefix/lib" -maxdepth 1 -type f -name '*.a' -print | sort
+			return
+		fi
+	fi
 
 	rm -rf "$build_dir" "$prefix"
 	CFLAGS="${CFLAGS:+$CFLAGS }$accelerate_compat" \

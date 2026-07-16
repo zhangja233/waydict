@@ -6,7 +6,7 @@ BUILD_TAGS ?= sherpa pipewire whispercpp
 GO_ENV ?= CGO_ENABLED=1 CGO_CFLAGS_ALLOW=-fno-strict-overflow
 VERSION ?= 0.1.0
 BUILD_NUMBER ?= 1
-COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+COMMIT ?= $(shell bash scripts/macos/source-version.sh)
 BUILD_TAGS_MACOS ?= coreaudio sherpa whispercpp
 MACOS_ARCH ?= $(shell uname -m)
 MACOS_GOARCH := $(if $(filter x86_64 amd64,$(MACOS_ARCH)),amd64,arm64)
@@ -18,14 +18,37 @@ MACOS_BUILD_TAGS_METADATA := $(subst $(space),$(comma),$(strip $(BUILD_TAGS_MACO
 MACOS_APP := build/Waydict.app
 MACOS_CONTENTS := $(MACOS_APP)/Contents
 MACOS_LDFLAGS := -s -w -X waydict/internal/buildinfo.Version=$(VERSION) -X waydict/internal/buildinfo.Commit=$(COMMIT) -X waydict/internal/buildinfo.BuildNumber=$(BUILD_NUMBER) -X waydict/internal/buildinfo.BuildTags=$(MACOS_BUILD_TAGS_METADATA)
+MACOS_DMG := dist/Waydict-$(VERSION)-universal.dmg
 
-.PHONY: build build-macos-dev test test-macos-bundle test-sherpa test-pipewire test-model test-whisper install clean
+.PHONY: build build-linux test test-linux-native test-macos-native build-macos-dev build-macos-arm64 build-macos-amd64 app-macos package-macos sign-macos notarize-macos verify-macos smoke-macos release-inputs test-macos-bundle test-sherpa test-pipewire test-model test-whisper install clean
 
 build:
 	$(GO_ENV) $(GO) build -tags "$(BUILD_TAGS)" -trimpath -ldflags "-s -w" -o $(BIN) ./cmd/waydict
 
-build-macos-dev:
+build-linux:
+	@echo "linux toolchain: $$($(GO) version); native pins: $$(tr '\n' ' ' < third_party/versions.lock)"
+	GOOS=linux CGO_ENABLED=0 $(GO) build ./...
+
+test:
+	@echo "test toolchain: $$($(GO) version); native pins: $$(tr '\n' ' ' < third_party/versions.lock)"
+	$(GO) test ./...
+
+test-linux-native:
+	@echo "linux native toolchain: $$($(GO) version); native pins: $$(tr '\n' ' ' < third_party/versions.lock)"
+	GOOS=linux CGO_ENABLED=0 $(GO) test ./...
+	GOOS=linux CGO_ENABLED=0 $(GO) vet ./...
+
+test-macos-native: release-inputs
+	$(GO) test ./...
+	$(GO) test -race ./...
+	$(GO) test ./packaging/macos
+
+release-inputs:
+	@VERSION='$(VERSION)' BUILD_NUMBER='$(BUILD_NUMBER)' RELEASE='$(RELEASE)' bash scripts/macos/release-info.sh
+
+build-macos-dev: release-inputs
 	bash scripts/macos/build-whisper.sh $(MACOS_ARCH)
+	bash scripts/macos/build-onnxruntime.sh $(MACOS_ARCH)
 	$(RM) -r $(MACOS_APP)
 	install -d $(MACOS_CONTENTS)/MacOS $(MACOS_CONTENTS)/Resources/en.lproj $(MACOS_CONTENTS)/Frameworks
 	$(MACOS_GO_ENV) $(GO) build -tags "$(BUILD_TAGS_MACOS)" -trimpath -ldflags "$(MACOS_LDFLAGS)" -o $(MACOS_CONTENTS)/MacOS/waydict-app ./cmd/waydict-app
@@ -39,22 +62,41 @@ build-macos-dev:
 	printf 'APPL????' > $(MACOS_CONTENTS)/PkgInfo
 	plutil -lint $(MACOS_CONTENTS)/Info.plist
 	plutil -lint $(MACOS_CONTENTS)/Resources/en.lproj/Localizable.strings $(MACOS_CONTENTS)/Resources/en.lproj/InfoPlist.strings
-	# Dev build is ad-hoc signed WITHOUT hardened runtime: under hardened
-	# runtime, library validation rejects the ad-hoc-signed bundled sherpa/
-	# onnxruntime dylibs (no matching Team ID) and dyld aborts at launch. The
-	# release path (Section 22) enables hardened runtime under one Developer ID
-	# where the nested dylibs share the app's Team ID. Do NOT add
-	# disable-library-validation (forbidden by the entitlement allowlist).
+	# Development bundles remain ad-hoc signed without hardened runtime.
 	for dylib in $(MACOS_CONTENTS)/Frameworks/*.dylib; do codesign -s - --force $$dylib; done
 	codesign -s - --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_CONTENTS)/MacOS/waydict
 	codesign -s - --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_CONTENTS)/MacOS/waydict-app
 	codesign -s - --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_APP)
 
+build-macos-arm64: release-inputs
+	bash scripts/macos/build-app-arch.sh arm64 '$(VERSION)' '$(BUILD_NUMBER)' '$(COMMIT)'
+
+build-macos-amd64: release-inputs
+	bash scripts/macos/build-app-arch.sh x86_64 '$(VERSION)' '$(BUILD_NUMBER)' '$(COMMIT)'
+
+app-macos: build-macos-arm64 build-macos-amd64
+	bash scripts/macos/make-universal-app.sh
+
+package-macos: app-macos
+	bash scripts/macos/make-dmg.sh $(MACOS_APP) '$(VERSION)' $(MACOS_DMG)
+	codesign --force --sign - $(MACOS_DMG)
+	bash scripts/macos/release-artifacts.sh '$(VERSION)' $(MACOS_DMG)
+
+sign-macos: release-inputs
+	bash scripts/macos/sign.sh $(MACOS_APP) '$(DEVELOPER_ID_APPLICATION)'
+
+notarize-macos: release-inputs
+	bash scripts/macos/notarize.sh $(MACOS_APP) '$(NOTARY_PROFILE)' '$(VERSION)'
+	bash scripts/macos/release-artifacts.sh '$(VERSION)' $(MACOS_DMG)
+
+verify-macos: release-inputs
+	bash scripts/macos/verify.sh '$(ARTIFACT)'
+
+smoke-macos: release-inputs
+	bash scripts/macos/smoke.sh '$(ARTIFACT)'
+
 test-macos-bundle:
 	$(GO) test ./packaging/macos
-
-test:
-	$(GO) test ./...
 
 test-sherpa:
 	$(GO_ENV) $(GO) test -tags sherpa ./internal/asr/sherpa ./internal/vad
@@ -80,4 +122,4 @@ install: build
 clean:
 	$(GO) clean
 	$(RM) $(BIN)
-	$(RM) -r $(MACOS_APP)
+	$(RM) -r build/Waydict.app build/macos build/dmg-root dist

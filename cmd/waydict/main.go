@@ -20,6 +20,7 @@ import (
 	"waydict/internal/asr"
 	sherpaasr "waydict/internal/asr/sherpa"
 	"waydict/internal/audio"
+	"waydict/internal/buildinfo"
 	"waydict/internal/config"
 	"waydict/internal/control"
 	"waydict/internal/doctor"
@@ -106,6 +107,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAppCommand(args[1:], stdout, stderr, opts)
 	case "diagnostics":
 		return runDiagnostics(args[1:], stdout, stderr, opts)
+	case "version":
+		return runVersion(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		usage(stderr)
@@ -132,7 +135,7 @@ func commandClassFor(platform string, args []string) commandClass {
 		return commandLocalOnly
 	}
 	switch args[0] {
-	case "model", "bench", "doctor":
+	case "model", "bench", "doctor", "version":
 		return commandLocalOnly
 	case "transcribe":
 		for _, arg := range args[1:] {
@@ -176,12 +179,67 @@ func usage(w io.Writer) {
 	waydict audio use <device-uid|default>
 	waydict restart
 	waydict diagnostics [--json]
+	waydict version [--json]
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
   waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-model-name, e.g. ggml-large-v3-turbo|all> [--dir PATH]
     any whisper.cpp ggml model name works; catalog names are integrity-pinned, others are size-checked
   waydict bench --file PATH [--repeat N]
   waydict doctor`)
+}
+
+type versionOutput struct {
+	Version            string `json:"version"`
+	BuildNumber        string `json:"build_number"`
+	Commit             string `json:"commit"`
+	BuildTags          string `json:"build_tags"`
+	GoVersion          string `json:"go_version"`
+	GOOS               string `json:"goos"`
+	GOARCH             string `json:"goarch"`
+	ProtocolVersion    int    `json:"protocol_version"`
+	XcodeVersion       string `json:"xcode_version"`
+	SDKVersion         string `json:"sdk_version"`
+	DeploymentTarget   string `json:"deployment_target"`
+	WhisperCommit      string `json:"whisper_commit"`
+	SherpaVersion      string `json:"sherpa_version"`
+	ONNXRuntimeVersion string `json:"onnxruntime_version"`
+	ModelCatalogSHA256 string `json:"model_catalog_sha256"`
+}
+
+func runVersion(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print JSON build metadata")
+	if err := fs.Parse(args); err != nil {
+		return exitcode.Usage
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "version accepts no positional arguments")
+		return exitcode.Usage
+	}
+	info := versionOutput{
+		Version:            buildinfo.Version,
+		BuildNumber:        buildinfo.BuildNumber,
+		Commit:             buildinfo.Commit,
+		BuildTags:          buildinfo.BuildTags,
+		GoVersion:          runtime.Version(),
+		GOOS:               runtime.GOOS,
+		GOARCH:             runtime.GOARCH,
+		ProtocolVersion:    control.Version,
+		XcodeVersion:       buildinfo.XcodeVersion,
+		SDKVersion:         buildinfo.SDKVersion,
+		DeploymentTarget:   buildinfo.DeploymentTarget,
+		WhisperCommit:      buildinfo.WhisperCommit,
+		SherpaVersion:      buildinfo.SherpaVersion,
+		ONNXRuntimeVersion: buildinfo.ONNXRuntimeVersion,
+		ModelCatalogSHA256: buildinfo.ModelCatalogSHA256,
+	}
+	if *jsonOut {
+		printJSON(stdout, info)
+	} else {
+		fmt.Fprintf(stdout, "waydict %s (build %s, commit %s)\n", info.Version, info.BuildNumber, info.Commit)
+	}
+	return exitcode.Success
 }
 
 func runDaemon(args []string, stderr io.Writer, opts cliOptions) int {

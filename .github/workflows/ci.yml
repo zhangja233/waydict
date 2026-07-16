@@ -26,3 +26,36 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+
+  macos-native:
+    name: macOS native and universal bundle
+    runs-on: macos-14
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Select Xcode 15.3
+        run: sudo xcode-select -s /Applications/Xcode_15.3.app
+      - name: Install native build tools
+        run: brew install cmake ninja
+      - name: Native tests
+        run: make test-macos-native
+      - name: Build universal DMG
+        run: make package-macos VERSION=0.1.0 BUILD_NUMBER="${{ github.run_number }}"
+      - name: Verify bundle and smoke
+        run: |
+          make verify-macos ARTIFACT=dist/Waydict-0.1.0-universal.dmg
+          make smoke-macos ARTIFACT=dist/Waydict-0.1.0-universal.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-macos-universal
+          path: |
+            dist/Waydict-0.1.0-universal.dmg
+            dist/Waydict-0.1.0-universal.dmg.sha256
+            dist/Waydict-0.1.0.spdx.json
+            dist/THIRD_PARTY_NOTICES.md
+            dist/SHA256SUMS

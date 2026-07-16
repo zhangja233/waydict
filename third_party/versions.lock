@@ -1,1 +1,5 @@
 whisper.cpp f049fff95a089aa9969deb009cdd4892b3e74916
+onnxruntime 2d924974ef147392ced8409d36bd6d2e7fcc8a74 1.24.4
+sherpa-onnx-go-macos 1.13.3
+uniseg 0.4.7
+macos-deployment-target 13.0

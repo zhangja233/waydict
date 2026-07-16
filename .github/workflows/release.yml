@@ -1,0 +1,119 @@
+name: macOS release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Sign and notarize universal release
+    runs-on: macos-14
+    timeout-minutes: 90
+    environment: macos-release
+    env:
+      CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+      NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+      NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+      NOTARY_APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+      NOTARY_PROFILE: waydict-ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Select Xcode 15.3
+        run: sudo xcode-select -s /Applications/Xcode_15.3.app
+      - name: Require protected release secrets
+        shell: bash
+        run: |
+          for name in CERTIFICATE_P12 CERTIFICATE_PASSWORD DEVELOPER_ID_APPLICATION NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_APP_PASSWORD KEYCHAIN_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "protected environment secret is missing: $name" >&2
+              exit 1
+            fi
+          done
+      - name: Resolve release version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release version: $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+      - name: Install native build tools
+        run: brew install cmake ninja
+      - name: Import signing identity and notary profile
+        shell: bash
+        run: |
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/waydict.keychain-db"
+          printf '%s' "$CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_APP_PASSWORD" --keychain "$keychain"
+          echo "WAYDICT_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Test and build universal app
+        run: |
+          go test ./...
+          go test -race ./...
+          make app-macos RELEASE=1 VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER"
+      - name: Sign, notarize, verify, and smoke
+        run: |
+          make sign-macos RELEASE=1 VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" DEVELOPER_ID_APPLICATION="$DEVELOPER_ID_APPLICATION"
+          make notarize-macos RELEASE=1 VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" NOTARY_PROFILE="$NOTARY_PROFILE"
+          make verify-macos RELEASE=1 VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" ARTIFACT="dist/Waydict-$VERSION-universal.dmg"
+          make smoke-macos RELEASE=1 VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" ARTIFACT="dist/Waydict-$VERSION-universal.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Waydict-${{ env.VERSION }}-release
+          path: |
+            dist/Waydict-${{ env.VERSION }}-universal.dmg
+            dist/Waydict-${{ env.VERSION }}-universal.dmg.sha256
+            dist/Waydict-${{ env.VERSION }}.spdx.json
+            dist/THIRD_PARTY_NOTICES.md
+            dist/SHA256SUMS
+            dist/waydict.rb
+            dist/notary-app.json
+            dist/notary-dmg.json
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Waydict-${{ env.VERSION }}-universal.dmg
+            dist/Waydict-${{ env.VERSION }}-universal.dmg.sha256
+            dist/Waydict-${{ env.VERSION }}.spdx.json
+            dist/THIRD_PARTY_NOTICES.md
+            dist/SHA256SUMS
+            dist/waydict.rb
+      - name: Remove temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${WAYDICT_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$WAYDICT_KEYCHAIN" || true
+          fi

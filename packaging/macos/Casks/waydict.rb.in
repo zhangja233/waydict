@@ -1,0 +1,21 @@
+cask "waydict" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/zhangja233/waydict/releases/download/v#{version}/Waydict-#{version}-universal.dmg"
+  name "Waydict"
+  desc "Local speech-to-text menu-bar app"
+  homepage "https://github.com/zhangja233/waydict"
+
+  depends_on macos: ">= :ventura"
+
+  app "Waydict.app"
+  binary "#{appdir}/Waydict.app/Contents/MacOS/waydict"
+
+  zap trash: [
+    "~/Library/Application Support/Waydict",
+    "~/Library/Caches/Waydict",
+    "~/Library/Logs/Waydict",
+    "~/Library/Preferences/io.github.zhangja233.waydict.plist",
+  ]
+end

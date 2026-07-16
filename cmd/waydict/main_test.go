@@ -34,6 +34,20 @@ func TestRunUsage(t *testing.T) {
 	}
 }
 
+func TestVersionJSON(t *testing.T) {
+	var out, stderr bytes.Buffer
+	if got := run([]string{"version", "--json"}, &out, &stderr); got != exitcode.Success {
+		t.Fatalf("exit = %d; stderr=%s", got, stderr.String())
+	}
+	var value versionOutput
+	if err := json.Unmarshal(out.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Version == "" || value.BuildNumber == "" || value.Commit == "" || value.GoVersion == "" || value.ProtocolVersion != control.Version {
+		t.Fatalf("incomplete version metadata: %+v", value)
+	}
+}
+
 func TestExitForErrUsesTypedCodes(t *testing.T) {
 	if got := exitForErr(errors.New("audio backend unavailable")); got != exitcode.Generic {
 		t.Fatalf("unknown error exit = %d", got)
@@ -524,6 +538,7 @@ func TestCommandClassRouting(t *testing.T) {
 		{platform: "darwin", args: []string{"transcribe", "--file", "x.wav"}, want: commandLocalOnly},
 		{platform: "darwin", args: []string{"transcribe", "--file", "x.wav", "--inject"}, want: commandDaemonDependent},
 		{platform: "linux", args: []string{"daemon"}, want: commandLocalOnly},
+		{platform: "darwin", args: []string{"version"}, want: commandLocalOnly},
 		{platform: "darwin", args: []string{"daemon"}, want: commandDaemonDependent},
 	}
 	for _, tc := range tests {

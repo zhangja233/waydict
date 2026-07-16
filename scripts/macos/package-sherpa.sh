@@ -5,6 +5,10 @@ readonly root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly app="${1:?usage: $0 APP_BUNDLE ARCH}"
 readonly arch="${2:?usage: $0 APP_BUNDLE ARCH}"
 readonly frameworks="$app/Contents/Frameworks"
+readonly lock_file="$root/third_party/versions.lock"
+readonly expected_sherpa="$(awk '$1 == "sherpa-onnx-go-macos" { print $2 }' "$lock_file")"
+readonly onnxruntime_version="$(awk '$1 == "onnxruntime" { print $3 }' "$lock_file")"
+readonly deployment_target="$(awk '$1 == "macos-deployment-target" { print $2 }' "$lock_file")"
 
 case "$arch" in
 	arm64)
@@ -21,13 +25,32 @@ esac
 
 readonly module_dir="${SHERPA_ONNX_MACOS_DIR:-$(cd "$root" && go list -m -f '{{.Dir}}' github.com/k2-fsa/sherpa-onnx-go-macos)}"
 readonly source_lib="$module_dir/lib/$module_arch"
+readonly actual_sherpa="$(cd "$root" && go list -m -f '{{.Version}}' github.com/k2-fsa/sherpa-onnx-go-macos)"
+readonly onnxruntime_lib="$root/build/onnxruntime-build/${arch/amd64/x86_64}/Release/libonnxruntime.$onnxruntime_version.dylib"
+
+if [[ "$actual_sherpa" != "v$expected_sherpa" ]]; then
+	echo "sherpa module is $actual_sherpa; expected v$expected_sherpa" >&2
+	exit 1
+fi
+if [[ ! -f "$onnxruntime_lib" ]]; then
+	echo "missing pinned ONNX Runtime slice: $onnxruntime_lib" >&2
+	exit 1
+fi
 
 install -d "$frameworks"
 install -m 0644 "$source_lib/libsherpa-onnx-c-api.dylib" "$frameworks/"
-install -m 0644 "$source_lib/libonnxruntime.1.24.4.dylib" "$frameworks/"
+install -m 0644 "$onnxruntime_lib" "$frameworks/"
+
+for dylib in "$frameworks"/*.dylib; do
+	current_minos="$(otool -l "$dylib" | awk '/cmd LC_BUILD_VERSION/ { found = 1; next } found && /minos / { print $2; exit }')"
+	if [[ "$current_minos" != "$deployment_target" ]]; then
+		vtool -set-build-version macos "$deployment_target" "$(xcrun --sdk macosx --show-sdk-version)" -replace -output "$dylib.retargeted" "$dylib"
+		mv "$dylib.retargeted" "$dylib"
+	fi
+done
 
 dependencies() {
-	otool -L "$1" | awk 'NR > 1 { print $1 }'
+	otool -L "$1" | awk 'substr($0, 1, 1) == "\t" { print $1 }'
 }
 
 rpaths() {
@@ -101,6 +124,19 @@ for executable in "$app/Contents/MacOS/waydict-app" "$app/Contents/MacOS/waydict
 			;;
 		esac
 	done < <(rpaths "$executable")
+done
+
+for dylib in "$frameworks"/*.dylib; do
+	want_arch="${arch/amd64/x86_64}"
+	if [[ "$(lipo -archs "$dylib")" != "$want_arch" ]]; then
+		echo "$dylib has architecture $(lipo -archs "$dylib"); expected $want_arch" >&2
+		exit 1
+	fi
+	minos="$(otool -l "$dylib" | awk '/cmd LC_BUILD_VERSION/ { found = 1; next } found && /minos / { print $2; exit }')"
+	if [[ "$minos" != "$deployment_target" ]]; then
+		echo "$dylib targets macOS $minos; expected $deployment_target" >&2
+		exit 1
+	fi
 done
 
 find "$frameworks" -maxdepth 1 -type f -name '*.dylib' -print | sort

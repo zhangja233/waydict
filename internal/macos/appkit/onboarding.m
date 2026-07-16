@@ -35,6 +35,9 @@ static NSButton *WDButton(NSString *title, SEL action, id target) {
 @implementation WDHost (Onboarding)
 
 - (void)showOnboardingIfNeeded {
+    if ([NSProcessInfo.processInfo.environment[@"WAYDICT_TEST_SUPPRESS_ONBOARDING"] boolValue]) {
+        return;
+    }
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if ([defaults integerForKey:@"onboardingCompletedVersion"] >= 1) {
         return;
