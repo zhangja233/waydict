@@ -15,6 +15,7 @@ import (
 	"waydict/internal/config"
 	"waydict/internal/focus"
 	"waydict/internal/inject"
+	"waydict/pkg/api"
 )
 
 func TestRuntimeWiresFactoriesServesAndCloses(t *testing.T) {
@@ -103,6 +104,59 @@ func TestRuntimeFocusStartupCanFailFastOrDegrade(t *testing.T) {
 	}
 }
 
+func TestRuntimeSuspendDiscardsSessionAndReleasesAudio(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := &recoverySource{}
+	application := New(ctx, config.Defaults(), Dependencies{
+		Source:   source,
+		Engine:   &FakeEngine{IsLoaded: true},
+		Injector: &MemoryInjector{},
+	})
+	runtime := &Runtime{App: application}
+	if err := application.Start(ctx, api.ModeToggle); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Suspend(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := application.Status(context.Background())
+	if status.State != api.StateIdle || status.Audio.Capturing || application.source != nil {
+		t.Fatalf("status after suspend = %+v source=%T", status, application.source)
+	}
+	if !source.stopped.Load() || !source.closed.Load() {
+		t.Fatalf("source stopped=%t closed=%t", source.stopped.Load(), source.closed.Load())
+	}
+}
+
+func TestCriticalMemoryPressureUnloadsOnlyWhileIdleAndNextStartReloads(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := &FakeEngine{IsLoaded: true}
+	second := &FakeEngine{}
+	var application *App
+	application = New(ctx, config.Defaults(), Dependencies{
+		Source: &audio.ScriptedSource{SampleRate: 16000, Delay: time.Millisecond},
+		Engine: first,
+		EnsureASR: func(context.Context) error {
+			application.setASREngine(second, asr.Resolution{Engine: asr.EngineSherpa, Provider: asr.ProviderCPU})
+			return nil
+		},
+	})
+	runtime := &Runtime{App: application}
+	unloaded, err := runtime.ReleaseASRForMemoryPressure()
+	if err != nil || !unloaded || first.Loaded() || application.Status(ctx).ASR.Loaded {
+		t.Fatalf("release result unloaded=%t err=%v first_loaded=%t status=%+v", unloaded, err, first.Loaded(), application.Status(ctx).ASR)
+	}
+	if err := application.Start(ctx, api.ModeOneshot); err != nil {
+		t.Fatal(err)
+	}
+	if !second.Loaded() {
+		t.Fatal("next start did not reload ASR")
+	}
+	_ = application.Stop(ctx, false)
+}
+
 func runtimeTestConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := config.Defaults()
@@ -119,6 +173,24 @@ func runtimeTestConfig(t *testing.T) config.Config {
 type runtimeSource struct {
 	closed *atomic.Bool
 }
+
+type recoverySource struct {
+	stopped atomic.Bool
+	closed  atomic.Bool
+}
+
+func (*recoverySource) Start(context.Context) error { return nil }
+func (*recoverySource) Pause(context.Context) error { return nil }
+func (s *recoverySource) Stop(context.Context) error {
+	s.stopped.Store(true)
+	return nil
+}
+func (*recoverySource) Read(ctx context.Context, _ []float32) (int, error) {
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+func (*recoverySource) Stats() audio.Stats { return audio.Stats{Backend: "test", SampleRate: 16000} }
+func (s *recoverySource) Close()           { s.closed.Store(true) }
 
 func (*runtimeSource) Start(context.Context) error                  { return nil }
 func (*runtimeSource) Pause(context.Context) error                  { return nil }

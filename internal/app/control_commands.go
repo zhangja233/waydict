@@ -54,8 +54,9 @@ func (a *App) handleExtendedControl(ctx context.Context, req control.Request) (c
 			return fail(withCode("usage", err))
 		}
 		if err := a.InjectFinalText(ctx, text, timeout); err != nil {
-			a.logInfo("inject text request", "text_bytes", len([]byte(text)), "request_id", req.ID, "peer_uid", peerUID, "result", apperr.Code(err))
-			return fail(err)
+			code := apperr.Code(err)
+			a.logInfo("inject text request", "text_bytes", len([]byte(text)), "request_id", req.ID, "peer_uid", peerUID, "result", code)
+			return control.Fail(req.ID, code, "text insertion failed; no transcript content is included in this response", a.Status(ctx)), true
 		}
 		a.logInfo("inject text request", "text_bytes", len([]byte(text)), "request_id", req.ID, "peer_uid", peerUID, "result", "ok")
 		return control.OK(req.ID, a.Status(ctx)), true
@@ -114,6 +115,17 @@ func (a *App) handleExtendedControl(ctx context.Context, req control.Request) (c
 		return control.OK(req.ID, a.Status(ctx)), true
 	case "install_required_models":
 		return a.runHostAction(ctx, req.ID, a.hostActions.InstallRequiredModels, nil), true
+	case "model_install_status":
+		if a.hostActions.ModelInstallStatus == nil {
+			return fail(withCode("dependency_missing", fmt.Errorf("model installation status is unavailable")))
+		}
+		status := a.hostActions.ModelInstallStatus()
+		if status == nil {
+			status = &api.ModelInstallStatus{}
+		}
+		return control.OKData(req.ID, a.Status(ctx), map[string]any{"model_install": status}), true
+	case "cancel_model_install":
+		return a.runHostAction(ctx, req.ID, a.hostActions.CancelModelInstall, nil), true
 	case "reveal_models":
 		return a.runHostAction(ctx, req.ID, a.hostActions.RevealModels, nil), true
 	case "open_config":

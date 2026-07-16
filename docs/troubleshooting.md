@@ -1,5 +1,19 @@
 # Troubleshooting
 
+## macOS menu app
+
+Run `waydict doctor` for local, noninvasive checks and `waydict diagnostics` for the redacted app report. `waydict app status --json` shows live runtime, permission, audio, ASR, and model-install state. The protected rotating log is at `~/Library/Logs/Waydict/waydict.log`.
+
+If Waydict reports App Translocation or a read-only volume, move `Waydict.app` to `/Applications`, quit the running copy, and reopen it. Dictation and the control socket stay disabled in that state, but diagnostics remain available.
+
+For microphone problems, use the Permissions submenu and confirm that the selected device still appears under Microphone. For shortcut problems, grant Input Monitoring, then use the visible Restart Waydict item if macOS requires the event tap to be recreated. Accessibility permission controls focus validation and Quartz insertion.
+
+Model installation is the only expected outbound network operation. Start or cancel it from the menu or with `waydict app install` / `waydict app cancel-install`; completion reloads ASR and VAD without relaunching the app. A second app or CLI installer returns `model_install_busy`.
+
+Sleep, screen lock, and fast user switching discard the active session. Waydict rechecks permissions, devices, CoreAudio, and the global shortcut after the machine and login session are both active; it never resumes interrupted dictation.
+
+Transcripts are excluded from macOS status, normal logs, and diagnostics. `debug.log_transcripts=true` is developer-only and may write sensitive text to the mode-`0600` log; leave it false. `debug.save_audio_segments=true` is separate explicit consent and is off by default.
+
 ## No Text Typed
 
 Run `waydict doctor`. Check that `wtype` is installed, the daemon is running, the model files pass `waydict model check`, and `status --json` does not show a recent `wtype_failed`, `pipewire_unavailable`, or `recognition_failed` error.

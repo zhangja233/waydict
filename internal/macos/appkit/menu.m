@@ -43,6 +43,15 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
     return [NSString stringWithFormat:WDLocalized(@"permission.format", @"%@: %@"), name, WDPermissionState(state)];
 }
 
+static NSString *WDCodedMessage(NSDictionary *values, NSString *codeKey, NSString *messageKey) {
+    NSString *code = WDString(values, codeKey);
+    NSString *message = WDString(values, messageKey);
+    if (message.length == 0) {
+        return @"";
+    }
+    return code.length == 0 ? message : [NSString stringWithFormat:@"%@: %@", code, message];
+}
+
 @implementation WDHost (Menu)
 
 - (void)setupMenu {
@@ -163,7 +172,7 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
     NSString *symbol = @"waveform";
     NSString *title = WDLocalized(@"status.ready", @"Waydict — Ready");
     NSString *accessibility = WDLocalized(@"accessibility.ready", @"Waydict, Ready");
-    BOOL actionRequired = [state isEqualToString:@"error"] || WDString(viewModel, @"last_error").length != 0 || WDBool(viewModel, @"installation_blocked") || self.hostError.length != 0;
+    BOOL actionRequired = [state isEqualToString:@"error"] || WDString(viewModel, @"last_error").length != 0 || WDString(viewModel, @"model_install_error").length != 0 || WDBool(viewModel, @"installation_blocked") || self.hostError.length != 0;
     if (actionRequired) {
         symbol = @"exclamationmark.triangle";
         title = WDLocalized(@"status.action_required", @"Waydict — Action required");
@@ -199,10 +208,13 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
         message = self.hostError;
     }
     if (message.length == 0) {
-        message = WDString(viewModel, @"last_error");
+        message = WDCodedMessage(viewModel, @"last_error_code", @"last_error");
     }
     if (message.length == 0) {
-        message = WDString(viewModel, @"last_warning");
+        message = WDCodedMessage(viewModel, @"last_warning_code", @"last_warning");
+    }
+    if (message.length == 0) {
+        message = WDString(viewModel, @"model_install_error");
     }
     if (message.length == 0) {
         message = WDString(viewModel, @"launch_at_login_error");
@@ -212,18 +224,20 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
 
     BOOL blocked = WDBool(viewModel, @"installation_blocked");
     BOOL active = ![state isEqualToString:@"idle"] && ![state isEqualToString:@"error"];
+    BOOL installing = WDBool(viewModel, @"installing_models");
     NSRunningApplication *target = [NSRunningApplication runningApplicationWithProcessIdentifier:self.latestExternalPID];
     BOOL targetAvailable = target != nil && !target.terminated && target.processIdentifier != getpid();
-    self.startItem.enabled = !blocked && [state isEqualToString:@"idle"] && targetAvailable;
+    self.startItem.enabled = !blocked && !installing && [state isEqualToString:@"idle"] && targetAvailable;
     self.startItem.toolTip = targetAvailable ? nil : WDLocalized(@"no_target", @"No target application is available");
     self.stopCommitItem.enabled = !blocked && active;
     self.stopDiscardItem.enabled = !blocked && active;
 
     BOOL hotkeyAvailable = WDBool(viewModel, @"hotkey_available");
-    self.modeItem.enabled = !blocked && hotkeyAvailable;
+    BOOL modeControlled = WDBool(viewModel, @"hotkey_mode_controlled");
+    self.modeItem.enabled = !blocked && !active && !installing && hotkeyAvailable && !modeControlled;
     NSString *selectedMode = WDString(viewModel, @"hotkey_mode");
     for (NSMenuItem *item in self.modeItems) {
-        item.enabled = !blocked && hotkeyAvailable;
+        item.enabled = !blocked && !active && !installing && hotkeyAvailable && !modeControlled;
         item.state = [item.representedObject isEqual:selectedMode] ? NSControlStateValueOn : NSControlStateValueOff;
     }
     NSString *shortcut = WDString(viewModel, @"hotkey_description");
@@ -278,10 +292,21 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
     self.modelItem.title = modelSummary.length == 0
         ? WDLocalized(@"model.unavailable", @"Model: unavailable")
         : [NSString stringWithFormat:WDLocalized(@"model.format", @"Model: %@"), modelSummary];
-    self.downloadModelsItem.enabled = !blocked && !WDBool(viewModel, @"installing_models");
-    self.downloadModelsItem.title = WDBool(viewModel, @"installing_models")
-        ? WDLocalized(@"downloading_models", @"Downloading Models…")
-        : WDLocalized(@"download_models", @"Download Required Models…");
+    self.downloadModelsItem.enabled = !blocked && (installing || !active);
+    if (installing) {
+        self.downloadModelsItem.tag = WaydictActionCancelModelInstall;
+        NSString *item = WDString(viewModel, @"model_install_item");
+        NSString *phase = WDString(viewModel, @"model_install_phase");
+        double percent = [viewModel[@"model_install_percent"] doubleValue];
+        if (percent > 0.0) {
+            self.downloadModelsItem.title = [NSString stringWithFormat:WDLocalized(@"cancel_model_progress", @"Cancel %@ — %.0f%%"), item.length == 0 ? phase : item, percent];
+        } else {
+            self.downloadModelsItem.title = WDLocalized(@"cancel_model_download", @"Cancel Model Download");
+        }
+    } else {
+        self.downloadModelsItem.tag = WaydictActionInstallRequiredModels;
+        self.downloadModelsItem.title = WDLocalized(@"download_models", @"Download Required Models…");
+    }
     self.revealModelsItem.enabled = !blocked;
 
     NSString *microphone = WDString(viewModel, @"microphone_permission");
@@ -297,7 +322,7 @@ static NSString *WDPermissionTitle(NSString *name, NSString *state) {
     self.launchAtLoginItem.state = WDBool(viewModel, @"launch_at_login") ? NSControlStateValueOn : NSControlStateValueOff;
     self.launchAtLoginItem.enabled = !blocked && WDString(viewModel, @"launch_at_login_error").length == 0;
     self.openConfigItem.enabled = !blocked;
-    self.reloadItem.enabled = !blocked;
+    self.reloadItem.enabled = !blocked && !active && !installing;
     self.restartItem.hidden = !WDBool(viewModel, @"pending_restart");
     self.restartItem.enabled = !blocked && !active;
     self.openLogItem.enabled = !blocked;

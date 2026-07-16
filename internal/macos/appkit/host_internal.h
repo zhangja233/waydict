@@ -44,6 +44,8 @@ static inline NSString *WDLocalized(NSString *key, NSString *fallback) {
 @property(nonatomic, copy) NSString *hostError;
 @property(nonatomic, strong) WDOnboardingController *onboarding;
 @property(nonatomic, strong) NSWindow *diagnosticsWindow;
+@property(nonatomic, copy) NSString *diagnosticsText;
+@property(nonatomic, strong) dispatch_source_t memoryPressureSource;
 @property(nonatomic) pid_t latestExternalPID;
 @property(nonatomic) BOOL terminationPending;
 @property(nonatomic) BOOL terminating;
@@ -78,6 +80,7 @@ static inline NSString *WDLocalized(NSString *key, NSString *fallback) {
 - (instancetype)initWithHost:(WDHost *)host;
 - (void)show;
 - (void)showError:(NSString *)message;
+- (void)refreshForViewModel;
 
 @end
 

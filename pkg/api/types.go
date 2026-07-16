@@ -28,23 +28,35 @@ type ErrorInfo struct {
 }
 
 type Status struct {
-	State                  State             `json:"state"`
-	Mode                   *Mode             `json:"mode"`
-	Audio                  AudioStatus       `json:"audio"`
-	VAD                    VADStatus         `json:"vad"`
-	ASR                    ASRStatus         `json:"asr"`
-	Injection              InjectionStatus   `json:"injection"`
-	Focus                  FocusStatus       `json:"focus"`
-	LastError              *ErrorInfo        `json:"last_error"`
-	LastWarning            *ErrorInfo        `json:"last_warning,omitempty"`
-	LastTranscriptRedacted bool              `json:"last_transcript_redacted"`
-	LastUninjectedText     string            `json:"last_uninjected_text,omitempty"`
-	LastTranscript         string            `json:"last_transcript,omitempty"`
-	UptimeSeconds          float64           `json:"uptime_seconds,omitempty"`
-	Platform               *PlatformStatus   `json:"platform,omitempty"`
-	Permissions            *PermissionStatus `json:"permissions,omitempty"`
-	Hotkey                 *HotkeyStatus     `json:"hotkey,omitempty"`
-	PendingRestart         bool              `json:"pending_restart,omitempty"`
+	State                  State               `json:"state"`
+	Mode                   *Mode               `json:"mode"`
+	Audio                  AudioStatus         `json:"audio"`
+	VAD                    VADStatus           `json:"vad"`
+	ASR                    ASRStatus           `json:"asr"`
+	Injection              InjectionStatus     `json:"injection"`
+	Focus                  FocusStatus         `json:"focus"`
+	LastError              *ErrorInfo          `json:"last_error"`
+	LastWarning            *ErrorInfo          `json:"last_warning,omitempty"`
+	LastTranscriptRedacted bool                `json:"last_transcript_redacted"`
+	LastUninjectedText     string              `json:"last_uninjected_text,omitempty"`
+	LastTranscript         string              `json:"last_transcript,omitempty"`
+	UptimeSeconds          float64             `json:"uptime_seconds,omitempty"`
+	Platform               *PlatformStatus     `json:"platform,omitempty"`
+	Permissions            *PermissionStatus   `json:"permissions,omitempty"`
+	Hotkey                 *HotkeyStatus       `json:"hotkey,omitempty"`
+	PendingRestart         bool                `json:"pending_restart,omitempty"`
+	ModelInstall           *ModelInstallStatus `json:"model_install,omitempty"`
+}
+
+type ModelInstallStatus struct {
+	Running         bool       `json:"running"`
+	Cancellable     bool       `json:"cancellable,omitempty"`
+	Item            string     `json:"item,omitempty"`
+	Phase           string     `json:"phase,omitempty"`
+	BytesDownloaded int64      `json:"bytes_downloaded,omitempty"`
+	TotalBytes      int64      `json:"total_bytes,omitempty"`
+	Percent         float64    `json:"percent,omitempty"`
+	Error           *ErrorInfo `json:"error,omitempty"`
 }
 
 type PlatformStatus struct {

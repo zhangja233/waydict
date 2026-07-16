@@ -96,7 +96,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runBench(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
-	case "permissions":
+	case "permission", "permissions":
 		return runPermissions(args[1:], stdout, stderr, opts)
 	case "audio":
 		return runAudio(args[1:], stdout, stderr, opts)
@@ -104,6 +104,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return sendCommand(args[1:], stdout, stderr, "restart_runtime", opts)
 	case "app":
 		return runAppCommand(args[1:], stdout, stderr, opts)
+	case "diagnostics":
+		return runDiagnostics(args[1:], stdout, stderr, opts)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		usage(stderr)
@@ -147,7 +149,7 @@ func commandClassFor(platform string, args []string) commandClass {
 			return commandDaemonDependent
 		}
 		return commandLocalOnly
-	case "start", "stop", "release", "toggle", "status", "reload_config", "shutdown", "permissions", "audio", "restart", "app":
+	case "start", "stop", "release", "toggle", "status", "reload_config", "shutdown", "permission", "permissions", "audio", "restart", "app", "diagnostics":
 		if platform == "darwin" {
 			return commandDaemonDependent
 		}
@@ -168,11 +170,12 @@ func usage(w io.Writer) {
   waydict status [--json]
 	waydict reload_config
 	waydict shutdown
-	waydict app open|quit
+	waydict app open|quit|status|restart|install|cancel-install|diagnostics
 	waydict permissions [--json]
 	waydict audio devices [--json]
 	waydict audio use <device-uid|default>
 	waydict restart
+	waydict diagnostics [--json]
   waydict transcribe --file PATH [--inject]
   waydict model check [--config PATH] [--dir PATH]
   waydict model install <parakeet-unified-en-0.6b-fp32|parakeet-v3-int8|silero-vad|whisper-model-name, e.g. ggml-large-v3-turbo|all> [--dir PATH]
@@ -389,22 +392,134 @@ func runAudio(args []string, stdout, stderr io.Writer, opts cliOptions) int {
 }
 
 func runAppCommand(args []string, stdout, stderr io.Writer, opts cliOptions) int {
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: waydict app open|quit")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: waydict app open|quit|status|restart|install|cancel-install|diagnostics")
 		return exitcode.Usage
 	}
-	command := ""
 	switch args[0] {
 	case "open":
-		command = "activate_app"
+		if len(args) != 1 {
+			return exitcode.Usage
+		}
+		_, code := requestDataCommand("activate_app", nil, stdout, stderr, opts)
+		return code
 	case "quit":
-		command = "shutdown"
+		if len(args) != 1 {
+			return exitcode.Usage
+		}
+		_, code := requestDataCommand("shutdown", nil, stdout, stderr, opts)
+		return code
+	case "status":
+		return sendCommand(args[1:], stdout, stderr, "status", opts)
+	case "restart":
+		return sendCommand(args[1:], stdout, stderr, "restart_runtime", opts)
+	case "install":
+		return runAppInstall(args[1:], stdout, stderr, opts)
+	case "cancel-install":
+		if len(args) != 1 {
+			return exitcode.Usage
+		}
+		_, code := requestDataCommand("cancel_model_install", nil, stdout, stderr, opts)
+		return code
+	case "diagnostics":
+		return runDiagnostics(args[1:], stdout, stderr, opts)
 	default:
-		fmt.Fprintln(stderr, "usage: waydict app open|quit")
+		fmt.Fprintln(stderr, "usage: waydict app open|quit|status|restart|install|cancel-install|diagnostics")
 		return exitcode.Usage
 	}
-	_, code := requestDataCommand(command, nil, stdout, stderr, opts)
-	return code
+}
+
+func runAppInstall(args []string, stdout, stderr io.Writer, opts cliOptions) int {
+	fs := flag.NewFlagSet("app install", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print final JSON status")
+	if err := fs.Parse(args); err != nil {
+		return exitcode.Usage
+	}
+	if fs.NArg() != 0 {
+		return exitcode.Usage
+	}
+	response, code := requestDataCommand("install_required_models", nil, stdout, stderr, opts)
+	if code != exitcode.Success {
+		return code
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	last := ""
+	for {
+		status := response.Status.ModelInstall
+		if status != nil {
+			value := fmt.Sprintf("%s %s %.0f%%", status.Item, status.Phase, status.Percent)
+			if value != last && status.Running {
+				fmt.Fprintln(stderr, strings.TrimSpace(value))
+				last = value
+			}
+			if !status.Running {
+				if *jsonOut {
+					printJSON(stdout, status)
+				} else {
+					fmt.Fprintf(stdout, "model_install=%s\n", status.Phase)
+				}
+				if status.Error != nil {
+					fmt.Fprintf(stderr, "%s: %s\n", status.Error.Code, status.Error.Message)
+					return exitcode.ForErrorCode(status.Error.Code)
+				}
+				return exitcode.Success
+			}
+		}
+		select {
+		case <-ctx.Done():
+			cancelCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			cfg, err := config.Load("")
+			if err == nil {
+				_, _ = sendRuntimeRequest(cancelCtx, cfg.Daemon.Socket, control.NewRequest("cancel_model_install", nil), opts)
+			}
+			cancel()
+			fmt.Fprintln(stderr, "model installation cancellation requested")
+			return exitcode.Generic
+		case <-time.After(200 * time.Millisecond):
+		}
+		cfg, err := config.Load("")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitcode.Generic
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		response, err = sendRuntimeRequest(requestCtx, cfg.Daemon.Socket, control.NewRequest("model_install_status", nil), opts)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitForControlErr(err)
+		}
+		if !response.OK {
+			fmt.Fprintf(stderr, "%s: %s\n", response.Error.Code, response.Error.Message)
+			return exitcode.ForErrorCode(response.Error.Code)
+		}
+	}
+}
+
+func runDiagnostics(args []string, stdout, stderr io.Writer, opts cliOptions) int {
+	fs := flag.NewFlagSet("diagnostics", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args); err != nil {
+		return exitcode.Usage
+	}
+	response, code := requestDataCommand("run_diagnostics", nil, stdout, stderr, opts)
+	if code != exitcode.Success {
+		return code
+	}
+	if *jsonOut {
+		printJSON(stdout, response.Data)
+		return exitcode.Success
+	}
+	report, _ := response.Data["report"].(string)
+	if report == "" {
+		fmt.Fprintln(stderr, "diagnostics report is unavailable")
+		return exitcode.Generic
+	}
+	fmt.Fprintln(stdout, report)
+	return exitcode.Success
 }
 
 func requestDataCommand(command string, args map[string]any, stdout, stderr io.Writer, opts cliOptions) (control.Response, int) {
@@ -858,21 +973,35 @@ any whisper.cpp ggml model name works; catalog names are integrity-pinned, other
 		if err := fs.Parse(args[2:]); err != nil {
 			return exitcode.Usage
 		}
-		ctx := context.Background()
-		install := func(kind string) bool {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		paths := config.CurrentPlatformPaths()
+		opts := modelinstall.InstallOptions{
+			Dir:      *dir,
+			StateDir: paths.StateDir,
+			CacheDir: paths.CacheDir,
+			Progress: func(progress modelinstall.Progress) {
+				if progress.TotalBytes > 0 {
+					fmt.Fprintf(stderr, "%s %s %.0f%%\n", progress.Item, progress.Phase, float64(progress.BytesDownloaded)*100/float64(progress.TotalBytes))
+				} else {
+					fmt.Fprintf(stderr, "%s %s\n", progress.Item, progress.Phase)
+				}
+			},
+		}
+		install := func(locked modelinstall.InstallOptions, kind string) bool {
 			var (
 				path string
 				err  error
 			)
 			switch kind {
 			case model.ParakeetUnifiedFP32ID:
-				path, err = installParakeetUnifiedFP32(ctx, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installParakeetUnifiedFP32(ctx, locked)
 			case "parakeet-v3-int8":
-				path, err = installParakeetV3Int8(ctx, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installParakeetV3Int8(ctx, locked)
 			case "silero-vad":
-				path, err = installSileroVAD(ctx, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installSileroVAD(ctx, locked)
 			default:
-				path, err = installWhisper(ctx, kind, modelinstall.InstallOptions{Dir: *dir})
+				path, err = installWhisper(ctx, kind, locked)
 			}
 			if err != nil {
 				fmt.Fprintf(stderr, "%s: %v\n", kind, err)
@@ -882,12 +1011,19 @@ any whisper.cpp ggml model name works; catalog names are integrity-pinned, other
 			return true
 		}
 		ok := true
-		if name == "all" {
-			ok = install(model.ParakeetUnifiedFP32ID) && ok
-			ok = install("silero-vad") && ok
-			ok = install(config.Defaults().ASR.WhisperModel) && ok
-		} else {
-			ok = install(name)
+		err := modelinstall.WithLock(ctx, opts, func(locked modelinstall.InstallOptions) error {
+			if name == "all" {
+				ok = install(locked, model.ParakeetUnifiedFP32ID) && ok
+				ok = install(locked, "silero-vad") && ok
+				ok = install(locked, config.Defaults().ASR.WhisperModel) && ok
+			} else {
+				ok = install(locked, name)
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitcode.ForErrorCode(apperr.Code(err))
 		}
 		if !ok {
 			return exitcode.Generic
@@ -1043,6 +1179,24 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "INFO %-18s %s\n", result.Name, result.Detail)
 		default:
 			fmt.Fprintf(stdout, "OK   %-18s\n", result.Name)
+		}
+	}
+	if cliPlatform == "darwin" {
+		probeCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		response, appErr := controlSend(probeCtx, cfg.Daemon.Socket, control.NewRequest("permissions", nil))
+		cancel()
+		if appErr != nil {
+			fmt.Fprintf(stdout, "INFO %-18s not running (%v)\n", "app host", appErr)
+		} else if !response.OK {
+			failures++
+			fmt.Fprintf(stdout, "FAIL %-18s %s: %s\n", "app host", response.Error.Code, response.Error.Message)
+		} else {
+			host := ""
+			if response.Status.Platform != nil {
+				host = response.Status.Platform.Host
+			}
+			fmt.Fprintf(stdout, "OK   %-18s host=%s\n", "app host", host)
+			fmt.Fprintf(stdout, "INFO %-18s microphone=%v accessibility=%v input_monitoring=%v\n", "permissions", response.Data["microphone"], response.Data["accessibility"], response.Data["input_monitoring"])
 		}
 	}
 	if resolutionErr == nil {

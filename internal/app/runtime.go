@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -50,6 +51,7 @@ type RuntimeOptions struct {
 	NewWhisper           WhisperFactory
 	ProbeAccelerator     func(provider string, device int) (asr.Accelerator, error)
 	AllowDegradedStartup bool
+	LogOutput            io.Writer
 	Shutdown             func()
 }
 
@@ -85,7 +87,7 @@ func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*R
 		opts.Platform.Name = "unknown"
 	}
 	runtimeCtx, cancel := context.WithCancel(ctx)
-	logger, logLevel := svlog.NewDynamic(cfg.Daemon.LogLevel, nil)
+	logger, logLevel := svlog.NewDynamic(cfg.Daemon.LogLevel, opts.LogOutput)
 	r := &Runtime{
 		Config:   cfg,
 		Platform: opts.Platform,
@@ -195,6 +197,7 @@ func NewRuntime(ctx context.Context, cfg config.Config, opts RuntimeOptions) (*R
 		Hotkey:           opts.Platform.Hotkey,
 		LoginItem:        opts.Platform.LoginItem,
 		HostActions:      opts.Platform.HostActions,
+		EnsureASR:        r.ensureASR,
 		SetLogLevel: func(level string) {
 			svlog.SetLevel(logLevel, level)
 		},
@@ -322,6 +325,9 @@ func (r *Runtime) RestartASR(ctx context.Context) error {
 	if r == nil || r.App == nil {
 		return apperr.New(apperr.CodeASRBackendUnavailable, "restart ASR", fmt.Errorf("runtime is unavailable"))
 	}
+	if err := r.App.requireIdle(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -339,7 +345,92 @@ func (r *Runtime) RestartASR(ctx context.Context) error {
 		_ = r.App.CloseASR()
 		return normalizeError(apperr.CodeASRModelInvalid, "restart ASR", err)
 	}
+	segmenter := vad.NewSegmenter(r.Config.VAD, r.Config.Audio.SampleRate)
+	r.App.segMu.Lock()
+	r.App.mu.Lock()
+	r.App.segmenter = segmenter
+	r.App.status.VAD.Engine = segmenter.Name()
+	r.App.mu.Unlock()
+	r.App.segMu.Unlock()
 	return nil
+}
+
+func (r *Runtime) ensureASR(ctx context.Context) error {
+	if r == nil || r.App == nil {
+		return apperr.New(apperr.CodeASRBackendUnavailable, "recreate ASR", fmt.Errorf("runtime is unavailable"))
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return apperr.New(apperr.CodeASRBackendUnavailable, "recreate ASR", fmt.Errorf("runtime is closed"))
+	}
+	r.App.mu.Lock()
+	present := r.App.engine != nil
+	r.App.mu.Unlock()
+	if present {
+		return nil
+	}
+	engine, resolution, err := resolveRuntimeASR(r.Config, r.opts)
+	if err != nil {
+		return err
+	}
+	r.App.setASREngine(engine, resolution)
+	return nil
+}
+
+func (r *Runtime) Suspend(ctx context.Context) error {
+	if r == nil || r.App == nil {
+		return audio.ErrUnavailable
+	}
+	var errs []error
+	status := r.App.Status(ctx)
+	if status.State != api.StateIdle && status.State != api.StateError {
+		if err := r.App.Stop(ctx, false); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	r.App.audioRecreateMu.Lock()
+	r.App.mu.Lock()
+	source := r.App.source
+	r.App.source = nil
+	r.App.sourceGeneration++
+	r.App.status.Audio.Capturing = false
+	r.App.mu.Unlock()
+	if source != nil {
+		if err := source.Stop(ctx); err != nil {
+			errs = append(errs, err)
+		}
+		closeSource(source)
+	}
+	r.App.audioRecreateMu.Unlock()
+	if r.App.guard != nil {
+		r.App.guard.Reset()
+	}
+	r.App.segMu.Lock()
+	if r.App.segmenter != nil {
+		r.App.segmenter.Reset()
+	}
+	r.App.segMu.Unlock()
+	return errors.Join(errs...)
+}
+
+func (r *Runtime) ReleaseASRForMemoryPressure() (bool, error) {
+	if r == nil || r.App == nil {
+		return false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false, nil
+	}
+	engine, detached := r.App.detachASRIfIdle()
+	if !detached {
+		return false, nil
+	}
+	if err := engine.Close(); err != nil {
+		return false, normalizeError(apperr.CodeASRBackendUnavailable, "release ASR after memory pressure", err)
+	}
+	return true, nil
 }
 
 func (r *Runtime) RecreateAudio(ctx context.Context) error {

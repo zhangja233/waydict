@@ -12,6 +12,7 @@
 extern bool waydictAppkitEvent(int32_t action, const char *payload, size_t payload_length, int64_t number);
 
 static const NSUInteger WDMaxPayloadBytes = 4 * 1024;
+static const NSUInteger WDMaxDiagnosticsBytes = 1024 * 1024;
 static os_unfair_lock WDUpdateLock = OS_UNFAIR_LOCK_INIT;
 static NSDictionary *WDPendingViewModel;
 static WDHost *WDPendingHost;
@@ -40,6 +41,7 @@ static NSDictionary *WDInstallationInfo(void) {
         @"translocated": @(translocated),
         @"read_only": readOnly,
         @"blocked": @(blocked),
+        @"os_version": NSProcessInfo.processInfo.operatingSystemVersionString ?: @"",
     };
 }
 
@@ -92,6 +94,20 @@ static NSDictionary *WDInstallationInfo(void) {
 - (void)systemDidWake:(NSNotification *)notification {
     (void)notification;
     if (![self emitAction:WaydictActionSystemDidWake payload:nil number:0]) {
+        [self showBusyMessage];
+    }
+}
+
+- (void)sessionDidResignActive:(NSNotification *)notification {
+    (void)notification;
+    if (![self emitAction:WaydictActionSessionDidResignActive payload:nil number:0]) {
+        [self showBusyMessage];
+    }
+}
+
+- (void)sessionDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    if (![self emitAction:WaydictActionSessionDidBecomeActive payload:nil number:0]) {
         [self showBusyMessage];
     }
 }
@@ -176,6 +192,26 @@ waydict_host_t waydict_host_create(void) {
                                                             selector:@selector(systemDidWake:)
                                                                 name:NSWorkspaceDidWakeNotification
                                                               object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:host
+                                                            selector:@selector(sessionDidResignActive:)
+                                                                name:NSWorkspaceSessionDidResignActiveNotification
+                                                              object:nil];
+        [NSWorkspace.sharedWorkspace.notificationCenter addObserver:host
+                                                            selector:@selector(sessionDidBecomeActive:)
+                                                                name:NSWorkspaceSessionDidBecomeActiveNotification
+                                                              object:nil];
+        __weak WDHost *weakHost = host;
+        host.memoryPressureSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE,
+                                                           0,
+                                                           DISPATCH_MEMORYPRESSURE_CRITICAL,
+                                                           dispatch_get_main_queue());
+        dispatch_source_set_event_handler(host.memoryPressureSource, ^{
+            WDHost *strongHost = weakHost;
+            if (strongHost != nil) {
+                [strongHost emitAction:WaydictActionMemoryPressureCritical payload:nil number:0];
+            }
+        });
+        dispatch_resume(host.memoryPressureSource);
         return (__bridge_retained void *)host;
     }
 }
@@ -186,6 +222,10 @@ void waydict_host_destroy(waydict_host_t opaque) {
     }
     WDHost *host = (__bridge_transfer WDHost *)opaque;
     [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:host];
+    if (host.memoryPressureSource != nil) {
+        dispatch_source_cancel(host.memoryPressureSource);
+        host.memoryPressureSource = nil;
+    }
     if (NSThread.isMainThread) {
         [NSStatusBar.systemStatusBar removeStatusItem:host.statusItem];
     }
@@ -247,6 +287,7 @@ void waydict_host_update_status(waydict_host_t opaque, const char *json, size_t 
             os_unfair_lock_unlock(&WDUpdateLock);
             pendingHost.viewModel = pending;
             [pendingHost applyViewModel:pending];
+            [pendingHost.onboarding refreshForViewModel];
         });
     }
 }
@@ -263,12 +304,17 @@ void waydict_host_show_error(waydict_host_t opaque, const char *code, const char
     });
 }
 
-void waydict_host_show_diagnostics(waydict_host_t opaque, bool copy_only) {
-    if (opaque == NULL) {
+void waydict_host_show_diagnostics(waydict_host_t opaque, const char *report, size_t length, bool copy_only) {
+    if (opaque == NULL || length > WDMaxDiagnosticsBytes || (length != 0 && report == NULL)) {
         return;
     }
     WDHost *host = (__bridge WDHost *)opaque;
+    NSString *text = length == 0 ? @"" : [[NSString alloc] initWithBytes:report length:length encoding:NSUTF8StringEncoding];
+    if (text == nil) {
+        return;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
+        host.diagnosticsText = text;
         if (copy_only) {
             [host copyDiagnostics];
         } else {

@@ -98,6 +98,33 @@ func TestStatusJSONIncludesResolvedASRFields(t *testing.T) {
 	}
 }
 
+func TestModelInstallControlStatusCancelAndStartGuard(t *testing.T) {
+	cfg := config.Defaults()
+	install := &api.ModelInstallStatus{Running: true, Cancellable: true, Item: "model", Phase: "downloading", Percent: 42}
+	cancelled := false
+	application := New(context.Background(), cfg, Dependencies{HostActions: HostActions{
+		ModelInstallStatus: func() *api.ModelInstallStatus {
+			copy := *install
+			return &copy
+		},
+		CancelModelInstall: func(context.Context) error {
+			cancelled = true
+			return nil
+		},
+	}})
+	statusResponse := application.HandleControl(context.Background(), control.NewRequest("model_install_status", nil))
+	if !statusResponse.OK || statusResponse.Status.ModelInstall == nil || statusResponse.Status.ModelInstall.Percent != 42 {
+		t.Fatalf("model install status response = %+v", statusResponse)
+	}
+	cancelResponse := application.HandleControl(context.Background(), control.NewRequest("cancel_model_install", nil))
+	if !cancelResponse.OK || !cancelled {
+		t.Fatalf("cancel response = %+v cancelled=%t", cancelResponse, cancelled)
+	}
+	if err := application.Start(context.Background(), api.ModeOneshot); apperr.Code(err) != apperr.CodeModelInstallBusy {
+		t.Fatalf("start error = %v, want %s", err, apperr.CodeModelInstallBusy)
+	}
+}
+
 func TestWhisperBackendDowngradeUpdatesStatus(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ASR.Engine = asr.EngineWhisper

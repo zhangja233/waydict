@@ -5,14 +5,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
+	"waydict/internal/apperr"
 	"waydict/internal/config"
 	"waydict/internal/model"
 )
@@ -46,6 +50,119 @@ func TestInstallWhisperWritesVerifiedModel(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != asset.File {
 		t.Fatalf("whisper dir not clean after install: %v", entries)
+	}
+}
+
+func TestInstallLockRejectsConcurrentInstaller(t *testing.T) {
+	opts := InstallOptions{StateDir: t.TempDir(), CacheDir: t.TempDir()}
+	lock, err := Acquire(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err := Acquire(context.Background(), opts); apperr.Code(err) != apperr.CodeModelInstallBusy {
+		t.Fatalf("second lock error = %v, want %s", err, apperr.CodeModelInstallBusy)
+	}
+	info, err := os.Stat(filepath.Join(opts.StateDir, installLockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("lock mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestInstallLockRejectsSymlink(t *testing.T) {
+	stateDir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(stateDir, installLockName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(context.Background(), InstallOptions{StateDir: stateDir, CacheDir: t.TempDir()}); err == nil || apperr.Code(err) == apperr.CodeModelInstallBusy {
+		t.Fatalf("symlink lock error = %v", err)
+	}
+}
+
+func TestAcquireCleansOnlyOldCurrentUserPartials(t *testing.T) {
+	models := t.TempDir()
+	cache := t.TempDir()
+	downloads := filepath.Join(cache, "downloads")
+	if err := os.MkdirAll(downloads, 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(downloads, "old.partial")
+	recent := filepath.Join(downloads, "recent.partial")
+	keep := filepath.Join(downloads, "model.bin")
+	for _, path := range []string{old, recent, keep} {
+		if err := os.WriteFile(path, []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(old, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := Acquire(context.Background(), InstallOptions{Dir: models, StateDir: t.TempDir(), CacheDir: cache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old partial remains: %v", err)
+	}
+	for _, path := range []string{recent, keep} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preserved file %s: %v", path, err)
+		}
+	}
+}
+
+func TestInstallProgressReportsPhasesAndCancellationCleansPartial(t *testing.T) {
+	body := bytes.Repeat([]byte("progress"), 64*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		for offset := 0; offset < len(body); offset += 4096 {
+			end := min(offset+4096, len(body))
+			if _, err := w.Write(body[offset:end]); err != nil {
+				return
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var phases []string
+	opts := InstallOptions{
+		Dir:      t.TempDir(),
+		StateDir: t.TempDir(),
+		CacheDir: t.TempDir(),
+		URL:      srv.URL,
+		Progress: func(progress Progress) {
+			phases = append(phases, progress.Phase)
+			if progress.Phase == "downloading" && progress.BytesDownloaded > 0 {
+				cancel()
+			}
+		},
+	}
+	asset := testWhisperAsset(body)
+	if _, err := installWhisperAsset(ctx, asset, opts); !errors.Is(err, context.Canceled) {
+		t.Fatalf("install error = %v, want cancellation", err)
+	}
+	if !slices.Contains(phases, "resolving") || !slices.Contains(phases, "downloading") {
+		t.Fatalf("progress phases = %v", phases)
+	}
+	entries, err := os.ReadDir(filepath.Join(opts.CacheDir, "downloads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("partial downloads remain after cancellation: %v", entries)
 	}
 }
 

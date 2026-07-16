@@ -130,6 +130,12 @@ static NSButton *WDButton(NSString *title, SEL action, id target) {
     self.errorLabel.hidden = message.length == 0;
 }
 
+- (void)refreshForViewModel {
+    if (self.step == 1 && self.window.visible) {
+        [self renderStep];
+    }
+}
+
 - (void)renderStep {
     for (NSView *view in self.contentStack.arrangedSubviews.copy) {
         [self.contentStack removeArrangedSubview:view];
@@ -153,11 +159,22 @@ static NSButton *WDButton(NSString *title, SEL action, id target) {
         [self addBody:ready
             ? WDLocalized(@"onboarding.models.ready", @"The configured speech models passed validation.")
             : WDLocalized(@"onboarding.models.missing", @"Required speech models are missing or invalid.")];
+        BOOL installing = [self.host.viewModel[@"installing_models"] boolValue];
+        if (installing) {
+            NSString *item = self.host.viewModel[@"model_install_item"] ?: @"";
+            NSString *phase = self.host.viewModel[@"model_install_phase"] ?: @"";
+            double percent = [self.host.viewModel[@"model_install_percent"] doubleValue];
+            [self addBody:[NSString stringWithFormat:WDLocalized(@"onboarding.models.progress", @"%@ %@ %.0f%%"), item, phase, percent]];
+        }
         NSButton *recommended = WDButton(WDLocalized(@"onboarding.models.recommended", @"Install Recommended"), @selector(installModels:), self);
+        recommended.tag = 1;
         recommended.accessibilityLabel = WDLocalized(@"onboarding.models.recommended", @"Install Recommended");
+        recommended.enabled = !installing;
         [self.contentStack addArrangedSubview:recommended];
         NSButton *fallback = WDButton(WDLocalized(@"onboarding.models.cpu", @"Install CPU Fallback"), @selector(installModels:), self);
+        fallback.tag = 2;
         fallback.accessibilityLabel = WDLocalized(@"onboarding.models.cpu", @"Install CPU Fallback");
+        fallback.enabled = !installing;
         [self.contentStack addArrangedSubview:fallback];
         break;
     }
@@ -258,8 +275,11 @@ static NSButton *WDButton(NSString *title, SEL action, id target) {
 }
 
 - (void)installModels:(id)sender {
-    (void)sender;
-    [self sendAction:WaydictActionInstallRequiredModels];
+    NSButton *button = [sender isKindOfClass:NSButton.class] ? sender : nil;
+    NSString *profile = button.tag == 2 ? @"cpu" : @"recommended";
+    if (![self.host emitAction:WaydictActionInstallRequiredModels payload:profile number:0]) {
+        [self.host showBusyMessage];
+    }
 }
 
 - (void)requestMicrophone:(id)sender {

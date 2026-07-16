@@ -34,6 +34,10 @@ const (
 	ActionQuit
 	ActionSystemWillSleep
 	ActionSystemDidWake
+	ActionSessionDidResignActive
+	ActionSessionDidBecomeActive
+	ActionMemoryPressureCritical
+	ActionCancelModelInstall
 )
 
 type Event struct {
@@ -47,6 +51,7 @@ type Installation struct {
 	Translocated bool   `json:"translocated"`
 	ReadOnly     bool   `json:"read_only"`
 	Blocked      bool   `json:"blocked"`
+	OSVersion    string `json:"os_version"`
 }
 
 type AudioDevice struct {
@@ -58,7 +63,9 @@ type AudioDevice struct {
 
 type ViewModel struct {
 	State                 string
+	LastErrorCode         string
 	LastError             string
+	LastWarningCode       string
 	LastWarning           string
 	MicrophonePermission  string
 	Accessibility         string
@@ -68,6 +75,7 @@ type ViewModel struct {
 	HotkeyMode            string
 	HotkeyDescription     string
 	HotkeyAvailable       bool
+	HotkeyModeControlled  bool
 	AudioDeviceName       string
 	AudioDeviceID         string
 	SelectedAudioDevice   string
@@ -80,6 +88,10 @@ type ViewModel struct {
 	ModelStatus           string
 	PendingRestart        bool
 	InstallingModels      bool
+	ModelInstallItem      string
+	ModelInstallPhase     string
+	ModelInstallPercent   float64
+	ModelInstallError     string
 	InstallationBlocked   bool
 	InstallationMessage   string
 	Version               string
@@ -109,6 +121,6 @@ func (*Host) Terminate()                               {}
 func (*Host) Destroy()                                 {}
 func (*Host) Update(ViewModel) error                   { return errUnavailable }
 func (*Host) ShowError(string, string)                 {}
-func (*Host) ShowDiagnostics(bool)                     {}
+func (*Host) ShowDiagnostics(string, bool)             {}
 func (*Host) OpenPath(context.Context, string) error   { return errUnavailable }
 func (*Host) RevealPath(context.Context, string) error { return errUnavailable }

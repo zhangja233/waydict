@@ -30,6 +30,10 @@ typedef enum {
     WaydictActionQuit = 20,
     WaydictActionSystemWillSleep = 21,
     WaydictActionSystemDidWake = 22,
+    WaydictActionSessionDidResignActive = 23,
+    WaydictActionSessionDidBecomeActive = 24,
+    WaydictActionMemoryPressureCritical = 25,
+    WaydictActionCancelModelInstall = 26,
 } WaydictAppAction;
 
 #endif

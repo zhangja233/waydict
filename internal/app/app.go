@@ -49,6 +49,7 @@ type Dependencies struct {
 	Hotkey           hotkey.Service
 	LoginItem        loginitem.Service
 	HostActions      HostActions
+	EnsureASR        func(context.Context) error
 	SetLogLevel      func(string)
 	Logger           *slog.Logger
 	Shutdown         func()
@@ -69,6 +70,8 @@ type HostActions struct {
 	Activate              func(context.Context) error
 	RestartRuntime        func(context.Context, config.Config) error
 	InstallRequiredModels func(context.Context) error
+	CancelModelInstall    func(context.Context) error
+	ModelInstallStatus    func() *api.ModelInstallStatus
 	RevealModels          func(context.Context) error
 	OpenConfig            func(context.Context) error
 	OpenLog               func(context.Context) error
@@ -98,6 +101,7 @@ type App struct {
 	hotkey             hotkey.Service
 	loginItem          loginitem.Service
 	hostActions        HostActions
+	ensureASR          func(context.Context) error
 	setLogLevel        func(string)
 	logger             *slog.Logger
 	post               inject.PostProcessor
@@ -164,6 +168,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 		hotkey:             deps.Hotkey,
 		loginItem:          deps.LoginItem,
 		hostActions:        deps.HostActions,
+		ensureASR:          deps.EnsureASR,
 		setLogLevel:        deps.SetLogLevel,
 		logger:             deps.Logger,
 		post:               inject.NewPostProcessor(cfg.PostProcess, cfg.Injection.AppendSpace),
@@ -213,7 +218,7 @@ func New(ctx context.Context, cfg config.Config, deps Dependencies) *App {
 			Available: deps.Focus != nil,
 			Sway:      deps.Focus != nil && deps.Focus.Backend() == "sway",
 		},
-		LastTranscriptRedacted: cfg.Daemon.RedactTranscriptsInLogs,
+		LastTranscriptRedacted: cfg.Daemon.RedactTranscriptsInLogs || deps.Capabilities.Host == "macos_app",
 	}
 	if deps.Capabilities.Platform != "" || deps.Capabilities.Host != "" {
 		a.status.Platform = &api.PlatformStatus{
@@ -335,6 +340,11 @@ func (a *App) StartWithOptions(ctx context.Context, opts StartOptions) error {
 	if opts.Origin == "" {
 		opts.Origin = StartOriginControl
 	}
+	if a.hostActions.ModelInstallStatus != nil {
+		if install := a.hostActions.ModelInstallStatus(); install != nil && install.Running {
+			return apperr.New(apperr.CodeModelInstallBusy, "start dictation", fmt.Errorf("model installation is in progress"))
+		}
+	}
 	a.mu.Lock()
 	if a.status.State != api.StateIdle && a.status.State != api.StateError {
 		state := a.status.State
@@ -366,7 +376,18 @@ func (a *App) StartWithOptions(ctx context.Context, opts StartOptions) error {
 			return a.failStart(apperr.CodeInjectorUnavailable, "check injector", err)
 		}
 	}
-	if a.engine != nil && !a.engine.Loaded() {
+	a.mu.Lock()
+	engineMissing := a.engine == nil
+	a.mu.Unlock()
+	if engineMissing && a.ensureASR != nil {
+		if err := a.ensureASR(ctx); err != nil {
+			return a.failStart(apperr.CodeASRBackendUnavailable, "recreate recognition engine", err)
+		}
+	}
+	a.mu.Lock()
+	engine := a.engine
+	a.mu.Unlock()
+	if engine != nil && !engine.Loaded() {
 		if err := a.loadASR(ctx, session); err != nil {
 			return a.failStart(apperr.CodeASRModelInvalid, "load recognition model", err)
 		}
@@ -604,8 +625,9 @@ func (a *App) ReloadConfig(ctx context.Context) error {
 	if a.focus != nil {
 		a.guard = focus.NewGuard(a.focus, focus.Policy(active.EffectiveFocusPolicy()))
 	}
-	a.status.LastTranscriptRedacted = active.Daemon.RedactTranscriptsInLogs
-	if active.Daemon.RedactTranscriptsInLogs {
+	statusRedacted := active.Daemon.RedactTranscriptsInLogs || a.capabilities.Host == "macos_app"
+	a.status.LastTranscriptRedacted = statusRedacted
+	if statusRedacted {
 		a.status.LastTranscript = ""
 		a.status.LastUninjectedText = ""
 	}
@@ -855,6 +877,21 @@ func (a *App) CloseASR() error {
 	return engine.Close()
 }
 
+func (a *App) detachASRIfIdle() (asr.Engine, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.capturing || a.pendingASR > 0 || len(a.deferred) > 0 || (a.status.State != api.StateIdle && a.status.State != api.StateError) {
+		return nil, false
+	}
+	engine := a.engine
+	if engine == nil || !engine.Loaded() {
+		return nil, false
+	}
+	a.engine = nil
+	a.status.ASR.Loaded = false
+	return engine, true
+}
+
 func (a *App) setASREngine(engine asr.Engine, resolution asr.Resolution) {
 	a.mu.Lock()
 	a.engine = engine
@@ -893,6 +930,14 @@ func (a *App) ActiveSession() (uint64, api.Mode, bool) {
 		return 0, "", false
 	}
 	return a.currentSession, *a.status.Mode, true
+}
+
+func (a *App) ConfigSnapshot() config.Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg := a.cfg
+	cfg.Hotkey.Modifiers = append([]string(nil), a.cfg.Hotkey.Modifiers...)
+	return cfg
 }
 
 func (a *App) Status(ctx context.Context) api.Status {
@@ -965,7 +1010,29 @@ func (a *App) Status(ctx context.Context) api.Status {
 		}
 		st.Hotkey = &copy
 	}
+	if a.hostActions.ModelInstallStatus != nil {
+		st.ModelInstall = a.hostActions.ModelInstallStatus()
+	}
+	if a.capabilities.Host == "macos_app" {
+		redactMacOSStatus(&st)
+	}
 	return st
+}
+
+func redactMacOSStatus(st *api.Status) {
+	st.LastTranscriptRedacted = true
+	st.LastTranscript = ""
+	st.LastUninjectedText = ""
+	st.Focus.StableID = ""
+	st.Focus.AppName = ""
+	st.Focus.AppID = ""
+	st.Focus.FocusedID = 0
+	st.Focus.FocusedName = ""
+	st.Focus.Class = ""
+	st.Focus.Workspace = ""
+	st.Focus.Output = ""
+	st.Focus.DegradedReason = ""
+	st.Injection.LastError = ""
 }
 
 func permissionStatus(snapshot permissions.Snapshot) *api.PermissionStatus {
@@ -1670,8 +1737,9 @@ func (a *App) recordTranscript(text string) {
 	a.status.LastError = nil
 	a.status.LastWarning = nil
 	a.status.LastUninjectedText = ""
-	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
-	if a.cfg.Daemon.RedactTranscriptsInLogs {
+	redacted := a.cfg.Daemon.RedactTranscriptsInLogs || a.capabilities.Host == "macos_app"
+	a.status.LastTranscriptRedacted = redacted
+	if redacted {
 		a.status.LastTranscript = ""
 	} else {
 		a.status.LastTranscript = text
@@ -1685,16 +1753,21 @@ func (a *App) recordCanceledTranscript(text string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	code := apperr.Code(err)
-	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
+	message := err.Error()
+	if text != "" {
+		message = strings.ReplaceAll(message, text, "<redacted>")
+	}
+	a.status.LastError = &api.ErrorInfo{Code: code, Message: message}
 	a.status.LastWarning = nil
-	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
-	if !a.cfg.Daemon.RedactTranscriptsInLogs {
+	redacted := a.cfg.Daemon.RedactTranscriptsInLogs || a.capabilities.Host == "macos_app"
+	a.status.LastTranscriptRedacted = redacted
+	if !redacted {
 		a.status.LastUninjectedText = text
 	} else {
 		a.status.LastUninjectedText = ""
 	}
 	if a.logger != nil {
-		a.logger.Warn("transcript cancelled", "code", code, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
+		a.logger.Warn("transcript cancelled", "code", code, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", message)
 	}
 }
 
@@ -1702,16 +1775,21 @@ func (a *App) recordUninjected(text string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	code := apperr.Code(err)
-	a.status.LastError = &api.ErrorInfo{Code: code, Message: err.Error()}
+	message := err.Error()
+	if text != "" {
+		message = strings.ReplaceAll(message, text, "<redacted>")
+	}
+	a.status.LastError = &api.ErrorInfo{Code: code, Message: message}
 	a.status.LastWarning = nil
-	a.status.LastTranscriptRedacted = a.cfg.Daemon.RedactTranscriptsInLogs
-	if !a.cfg.Daemon.RedactTranscriptsInLogs {
+	redacted := a.cfg.Daemon.RedactTranscriptsInLogs || a.capabilities.Host == "macos_app"
+	a.status.LastTranscriptRedacted = redacted
+	if !redacted {
 		a.status.LastUninjectedText = text
 	} else {
 		a.status.LastUninjectedText = ""
 	}
 	if a.logger != nil {
-		a.logger.Warn("transcript not injected", "code", code, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", err)
+		a.logger.Warn("transcript not injected", "code", code, "text_bytes", len(text), "redacted", a.cfg.Daemon.RedactTranscriptsInLogs, "error", message)
 	}
 }
 

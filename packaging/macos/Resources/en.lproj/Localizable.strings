@@ -8,6 +8,8 @@
 "app.name" = "Waydict";
 "back" = "Back";
 "busy.action" = "Waydict is busy; action not accepted";
+"cancel_model_download" = "Cancel Model Download";
+"cancel_model_progress" = "Cancel %@ — %.0f%%";
 "close" = "Close";
 "continue" = "Continue";
 "copy_diagnostics" = "Copy Diagnostics";
@@ -71,6 +73,7 @@
 "onboarding.models.body" = "Install the configured Whisper model and Silero VAD, or the local CPU fallback model. You can skip this step and install models later from the menu.";
 "onboarding.models.cpu" = "Install CPU Fallback";
 "onboarding.models.missing" = "Required speech models are missing or invalid.";
+"onboarding.models.progress" = "%@ %@ %.0f%%";
 "onboarding.models.ready" = "The configured speech models passed validation.";
 "onboarding.models.recommended" = "Install Recommended";
 "onboarding.models.title" = "Install speech models";

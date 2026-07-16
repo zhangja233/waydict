@@ -582,6 +582,53 @@ func TestDarwinTranscribeInjectDelegatesToApp(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsCLIPrintsRedactedReport(t *testing.T) {
+	forceCLIPlatform(t, "darwin")
+	t.Setenv("HOME", t.TempDir())
+	oldSend := controlSend
+	t.Cleanup(func() { controlSend = oldSend })
+	controlSend = func(_ context.Context, _ string, request control.Request) (control.Response, error) {
+		if request.Command != "run_diagnostics" {
+			t.Fatalf("command = %q", request.Command)
+		}
+		return control.OKData(request.ID, api.Status{}, map[string]any{"report": "Waydict Diagnostics\ntranscripts: redacted"}), nil
+	}
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--no-launch", "diagnostics"}, &stdout, &stderr); got != exitcode.Success {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", got, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Waydict Diagnostics") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestAppInstallPollsProgressToCompletion(t *testing.T) {
+	forceCLIPlatform(t, "darwin")
+	t.Setenv("HOME", t.TempDir())
+	oldSend := controlSend
+	t.Cleanup(func() { controlSend = oldSend })
+	calls := 0
+	controlSend = func(_ context.Context, _ string, request control.Request) (control.Response, error) {
+		calls++
+		switch request.Command {
+		case "install_required_models":
+			return control.OK(request.ID, api.Status{ModelInstall: &api.ModelInstallStatus{Running: true, Item: "model", Phase: "downloading", Percent: 50}}), nil
+		case "model_install_status":
+			return control.OK(request.ID, api.Status{ModelInstall: &api.ModelInstallStatus{Phase: "complete", Percent: 100}}), nil
+		default:
+			t.Fatalf("command = %q", request.Command)
+			return control.Response{}, nil
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--no-launch", "app", "install"}, &stdout, &stderr); got != exitcode.Success {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", got, stdout.String(), stderr.String())
+	}
+	if calls < 2 || !strings.Contains(stdout.String(), "model_install=complete") || !strings.Contains(stderr.String(), "downloading") {
+		t.Fatalf("calls=%d stdout=%q stderr=%q", calls, stdout.String(), stderr.String())
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.toml")

@@ -13,7 +13,7 @@ int waydict_host_run(waydict_host_t host);
 void waydict_host_terminate(waydict_host_t host);
 void waydict_host_update_status(waydict_host_t host, const char *json, size_t length);
 void waydict_host_show_error(waydict_host_t host, const char *code, const char *message);
-void waydict_host_show_diagnostics(waydict_host_t host, bool copy_only);
+void waydict_host_show_diagnostics(waydict_host_t host, const char *report, size_t length, bool copy_only);
 char *waydict_host_copy_installation_json(waydict_host_t host);
 void waydict_host_free_string(char *value);
 bool waydict_host_open_path(waydict_host_t host, const char *path);

@@ -52,6 +52,10 @@ const (
 	ActionQuit
 	ActionSystemWillSleep
 	ActionSystemDidWake
+	ActionSessionDidResignActive
+	ActionSessionDidBecomeActive
+	ActionMemoryPressureCritical
+	ActionCancelModelInstall
 )
 
 type Event struct {
@@ -65,6 +69,7 @@ type Installation struct {
 	Translocated bool   `json:"translocated"`
 	ReadOnly     bool   `json:"read_only"`
 	Blocked      bool   `json:"blocked"`
+	OSVersion    string `json:"os_version"`
 }
 
 type AudioDevice struct {
@@ -76,7 +81,9 @@ type AudioDevice struct {
 
 type ViewModel struct {
 	State                 string        `json:"state"`
+	LastErrorCode         string        `json:"last_error_code,omitempty"`
 	LastError             string        `json:"last_error,omitempty"`
+	LastWarningCode       string        `json:"last_warning_code,omitempty"`
 	LastWarning           string        `json:"last_warning,omitempty"`
 	MicrophonePermission  string        `json:"microphone_permission,omitempty"`
 	Accessibility         string        `json:"accessibility_permission,omitempty"`
@@ -86,6 +93,7 @@ type ViewModel struct {
 	HotkeyMode            string        `json:"hotkey_mode,omitempty"`
 	HotkeyDescription     string        `json:"hotkey_description,omitempty"`
 	HotkeyAvailable       bool          `json:"hotkey_available"`
+	HotkeyModeControlled  bool          `json:"hotkey_mode_controlled"`
 	AudioDeviceName       string        `json:"audio_device_name,omitempty"`
 	AudioDeviceID         string        `json:"audio_device_id,omitempty"`
 	SelectedAudioDevice   string        `json:"selected_audio_device_uid,omitempty"`
@@ -98,6 +106,10 @@ type ViewModel struct {
 	ModelStatus           string        `json:"model_status,omitempty"`
 	PendingRestart        bool          `json:"pending_restart"`
 	InstallingModels      bool          `json:"installing_models"`
+	ModelInstallItem      string        `json:"model_install_item,omitempty"`
+	ModelInstallPhase     string        `json:"model_install_phase,omitempty"`
+	ModelInstallPercent   float64       `json:"model_install_percent,omitempty"`
+	ModelInstallError     string        `json:"model_install_error,omitempty"`
 	InstallationBlocked   bool          `json:"installation_blocked"`
 	InstallationMessage   string        `json:"installation_message,omitempty"`
 	Version               string        `json:"version,omitempty"`
@@ -221,11 +233,17 @@ func (h *Host) ShowError(code, message string) {
 	C.waydict_host_show_error(h.native, nativeCode, nativeMessage)
 }
 
-func (h *Host) ShowDiagnostics(copyOnly bool) {
+func (h *Host) ShowDiagnostics(report string, copyOnly bool) {
 	if h == nil || h.native == nil || h.destroyed.Load() {
 		return
 	}
-	C.waydict_host_show_diagnostics(h.native, C.bool(copyOnly))
+	encoded := []byte(report)
+	var pointer *C.char
+	if len(encoded) != 0 {
+		pointer = (*C.char)(unsafe.Pointer(&encoded[0]))
+	}
+	C.waydict_host_show_diagnostics(h.native, pointer, C.size_t(len(encoded)), C.bool(copyOnly))
+	runtime.KeepAlive(encoded)
 }
 
 func (h *Host) OpenPath(ctx context.Context, path string) error {

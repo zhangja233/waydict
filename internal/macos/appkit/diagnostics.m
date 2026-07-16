@@ -22,6 +22,9 @@ static NSString *WDYesNo(BOOL value) {
 @implementation WDHost (Diagnostics)
 
 - (NSString *)diagnosticsReport {
+    if (self.diagnosticsText.length != 0) {
+        return self.diagnosticsText;
+    }
     NSDictionary *view = self.viewModel ?: @{};
     NSDictionary *installation = self.installation ?: @{};
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
