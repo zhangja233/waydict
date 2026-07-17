@@ -26,6 +26,8 @@ static const size_t WD_CA_MAX_SLOT_BYTES = 1024 * 1024;
 static const size_t WD_CA_MAX_RAW_BYTES = 64 * 1024 * 1024;
 static const size_t WD_CA_EVENT_CAPACITY = 64;
 static const double WD_CA_LEVEL_FLOOR = -120.0;
+static const double WD_CA_MIN_TAP_MS = 100.0;
+static const double WD_CA_MAX_TAP_MS = 400.0;
 static const uint32_t WD_CA_TEARDOWN_TIMEOUT_MS = 250;
 
 typedef enum {
@@ -36,6 +38,15 @@ typedef enum {
   WD_CA_STATE_STOPPING = 4,
   WD_CA_STATE_STOPPED = 5
 } wd_ca_state;
+
+typedef enum {
+  WD_CA_TAP_FAILURE_NONE = 0,
+  WD_CA_TAP_FAILURE_GENERATION = 1,
+  WD_CA_TAP_FAILURE_FRAME_CAPACITY = 2,
+  WD_CA_TAP_FAILURE_BUFFER_LIST = 3,
+  WD_CA_TAP_FAILURE_BUFFER_COUNT = 4,
+  WD_CA_TAP_FAILURE_BUFFER_LAYOUT = 5
+} wd_ca_tap_failure;
 
 @interface WDCATapContext : NSObject {
 @public
@@ -62,8 +73,9 @@ typedef enum {
 @public
   AVAudioEngine *_engine;
   AVAudioInputNode *_inputNode;
-  AVAudioFormat *_inputFormat;
-  AVAudioFormat *_outputFormat;
+  AVAudioFormat *_nodeInputFormat;
+  AVAudioFormat *_tapFormat;
+  AVAudioFormat *_converterFormat;
   AVAudioConverter *_converter;
   AVAudioPCMBuffer *_inputScratch;
   AVAudioPCMBuffer *_outputScratch;
@@ -114,11 +126,23 @@ struct wd_ca_capture {
   _Atomic bool capture_confirmed;
   _Atomic uint64_t generation;
   _Atomic uint64_t overruns;
+  _Atomic uint64_t tap_callbacks;
+  _Atomic uint64_t tap_frames_seen;
+  _Atomic uint64_t raw_buffers;
+  _Atomic uint64_t raw_frames;
+  _Atomic uint64_t converted_buffers;
+  _Atomic uint64_t converted_frames;
+  _Atomic uint64_t format_change_events;
+  _Atomic uint64_t ignored_startup_format_events;
+  _Atomic uint32_t tap_max_frames;
+  _Atomic uint32_t tap_last_buffer_count;
+  _Atomic int tap_failure;
   _Atomic int level_mdb;
   _Atomic bool default_device_dirty;
   _Atomic bool stop_requested;
 
   uint32_t sample_rate;
+  uint32_t quantum_ms;
   uint32_t tap_frames;
   uint32_t input_buffers;
   _Atomic uint32_t selected_device;
@@ -170,6 +194,158 @@ static void wd_ca_set_nserror(char **error, NSString *operation, NSError *value)
   const char *op = operation.UTF8String ?: "CoreAudio operation";
   const char *detail = value.localizedDescription.UTF8String ?: "unknown error";
   wd_ca_set_error(error, "%s: %s", op, detail);
+}
+
+static const char *wd_ca_tap_failure_name(int failure) {
+  switch (failure) {
+    case WD_CA_TAP_FAILURE_GENERATION: return "generation";
+    case WD_CA_TAP_FAILURE_FRAME_CAPACITY: return "frame-capacity";
+    case WD_CA_TAP_FAILURE_BUFFER_LIST: return "buffer-list";
+    case WD_CA_TAP_FAILURE_BUFFER_COUNT: return "buffer-count";
+    case WD_CA_TAP_FAILURE_BUFFER_LAYOUT: return "buffer-layout";
+    default: return "none";
+  }
+}
+
+static void wd_ca_describe_format(AVAudioFormat *format, char *out, size_t capacity) {
+  if (out == NULL || capacity == 0) return;
+  if (format == nil) {
+    snprintf(out, capacity, "unavailable");
+    return;
+  }
+  const AudioStreamBasicDescription *description = format.streamDescription;
+  if (description == NULL) {
+    snprintf(out, capacity, "unavailable");
+    return;
+  }
+  snprintf(out,
+           capacity,
+           "sample_rate=%.3f,channel_count=%u,format_id=0x%08x,format_flags=0x%08x,bytes_per_frame=%u",
+           format.sampleRate,
+           format.channelCount,
+           (unsigned int)description->mFormatID,
+           (unsigned int)description->mFormatFlags,
+           (unsigned int)description->mBytesPerFrame);
+}
+
+static void wd_ca_collect_diagnostics(wd_ca_capture *capture,
+                                      WDCASession *session,
+                                      char *out,
+                                      size_t capacity) {
+  if (out == NULL || capacity == 0) return;
+  char uid[512] = {0};
+  pthread_mutex_lock(&capture->device_mutex);
+  if (capture->device_uid != NULL) strncpy(uid, capture->device_uid, sizeof(uid) - 1);
+  pthread_mutex_unlock(&capture->device_mutex);
+
+  AVAudioFormat *live_input = nil;
+  AVAudioFormat *live_output = nil;
+  if (session != nil) {
+    @try {
+      live_input = [session->_inputNode inputFormatForBus:0];
+      live_output = [session->_inputNode outputFormatForBus:0];
+    } @catch (__unused NSException *exception) {
+    }
+  }
+  char setup_input[160];
+  char setup_output[160];
+  char current_input[160];
+  char current_output[160];
+  wd_ca_describe_format(session == nil ? nil : session->_nodeInputFormat,
+                        setup_input,
+                        sizeof(setup_input));
+  wd_ca_describe_format(session == nil ? nil : session->_tapFormat,
+                        setup_output,
+                        sizeof(setup_output));
+  wd_ca_describe_format(live_input, current_input, sizeof(current_input));
+  wd_ca_describe_format(live_output, current_output, sizeof(current_output));
+
+  snprintf(out,
+           capacity,
+           "device_uid=\"%s\" device_id=%u setup_input={%s} setup_output={%s} "
+           "live_input={%s} live_output={%s} engine_running=%s tap_installed=%s "
+           "quantum_ms=%u tap_capacity=%u tap_fired=%s tap_callbacks=%llu tap_frames_seen=%llu "
+           "tap_max_frames=%u tap_last_buffer_count=%u raw_buffers=%llu raw_frames=%llu "
+           "converted_buffers=%llu converted_frames=%llu format_change_events=%llu "
+           "ignored_startup_format_events=%llu tap_failure=%s",
+           uid[0] == '\0' ? "<unresolved>" : uid,
+           atomic_load_explicit(&capture->selected_device, memory_order_acquire),
+           setup_input,
+           setup_output,
+           current_input,
+           current_output,
+           session != nil && session->_engine.isRunning ? "true" : "false",
+           session != nil && session->_tapInstalled ? "true" : "false",
+           capture->quantum_ms,
+           capture->tap_frames,
+           atomic_load_explicit(&capture->tap_callbacks, memory_order_relaxed) != 0 ? "true" : "false",
+           (unsigned long long)atomic_load_explicit(&capture->tap_callbacks, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->tap_frames_seen, memory_order_relaxed),
+           atomic_load_explicit(&capture->tap_max_frames, memory_order_relaxed),
+           atomic_load_explicit(&capture->tap_last_buffer_count, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->raw_buffers, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->raw_frames, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->converted_buffers, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->converted_frames, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->format_change_events, memory_order_relaxed),
+           (unsigned long long)atomic_load_explicit(&capture->ignored_startup_format_events,
+                                                    memory_order_relaxed),
+           wd_ca_tap_failure_name(atomic_load_explicit(&capture->tap_failure, memory_order_relaxed)));
+}
+
+static void wd_ca_log_diagnostics(wd_ca_capture *capture,
+                                  WDCASession *session,
+                                  const char *phase,
+                                  const char *branch,
+                                  int status,
+                                  uint32_t timeout_ms) {
+  char diagnostics[2048];
+  wd_ca_collect_diagnostics(capture, session, diagnostics, sizeof(diagnostics));
+  fprintf(stderr,
+          "level=INFO msg=\"CoreAudio capture diagnostic\" phase=%s branch=%s status=%d "
+          "timeout_ms=%u %s\n",
+          phase,
+          branch,
+          status,
+          timeout_ms,
+          diagnostics);
+  fflush(stderr);
+}
+
+static void wd_ca_append_start_diagnostics(wd_ca_capture *capture,
+                                           WDCASession *session,
+                                           const char *branch,
+                                           int status,
+                                           uint32_t timeout_ms,
+                                           char **error) {
+  char diagnostics[2048];
+  wd_ca_collect_diagnostics(capture, session, diagnostics, sizeof(diagnostics));
+  fprintf(stderr,
+          "level=INFO msg=\"CoreAudio capture diagnostic\" phase=start branch=%s status=%d "
+          "timeout_ms=%u %s\n",
+          branch,
+          status,
+          timeout_ms,
+          diagnostics);
+  fflush(stderr);
+  if (error == NULL) return;
+  char *cause = *error;
+  *error = NULL;
+  if (cause == NULL) {
+    wd_ca_set_error(error,
+                    "CoreAudio startup branch=%s status=%d; %s",
+                    branch,
+                    status,
+                    diagnostics);
+  } else {
+    wd_ca_set_error(error,
+                    "%s; CoreAudio diagnostics branch=%s status=%d %s",
+                    cause,
+                    branch,
+                    status,
+                    diagnostics);
+  }
+  free(cause);
 }
 
 void wd_ca_free(void *value) {
@@ -607,9 +783,18 @@ static OSStatus wd_ca_property_listener(AudioObjectID object,
         } else if (object == atomic_load_explicit(&capture->selected_device, memory_order_acquire) &&
                    (selector == kAudioDevicePropertyStreamConfiguration ||
                     selector == kAudioDevicePropertyNominalSampleRate)) {
-          wd_ca_queue_current_event(capture, WD_CA_EVENT_FORMAT_CHANGED, WD_CA_STATUS_FORMAT_CHANGED);
+          atomic_fetch_add_explicit(&capture->format_change_events, 1, memory_order_relaxed);
           int state = atomic_load_explicit(&capture->state, memory_order_acquire);
-          if (state == WD_CA_STATE_STARTING || state == WD_CA_STATE_CAPTURING) {
+          bool settling = state == WD_CA_STATE_STARTING &&
+                          !atomic_load_explicit(&capture->capture_confirmed, memory_order_acquire);
+          wd_ca_queue_current_event(capture,
+                                    WD_CA_EVENT_FORMAT_CHANGED,
+                                    settling ? WD_CA_STATUS_OK : WD_CA_STATUS_FORMAT_CHANGED);
+          if (settling) {
+            atomic_fetch_add_explicit(&capture->ignored_startup_format_events,
+                                      1,
+                                      memory_order_relaxed);
+          } else if (state == WD_CA_STATE_STARTING || state == WD_CA_STATE_CAPTURING) {
             wd_ca_store_terminal_and_wake(capture, WD_CA_STATUS_FORMAT_CHANGED);
           }
         }
@@ -678,7 +863,9 @@ static bool wd_ca_load_raw_slot(wd_ca_capture *capture,
 
 static bool wd_ca_convert_slot(wd_ca_capture *capture,
                                WDCASession *session,
-                               wd_ca_raw_slot *slot) {
+                               wd_ca_raw_slot *slot,
+                               uint64_t *produced_frames) {
+  *produced_frames = 0;
   if (!wd_ca_load_raw_slot(capture, session, slot)) return false;
   session->_inputProvided = NO;
   NSUInteger iterations = 0;
@@ -694,6 +881,9 @@ static bool wd_ca_convert_slot(wd_ca_capture *capture,
     if (frames != 0) {
       float *samples = session->_outputScratch.floatChannelData[0];
       if (samples == NULL) return false;
+      atomic_fetch_add_explicit(&capture->converted_buffers, 1, memory_order_relaxed);
+      atomic_fetch_add_explicit(&capture->converted_frames, frames, memory_order_relaxed);
+      *produced_frames += frames;
       wd_ca_publish_converted(capture, samples, frames);
     }
     if (status == AVAudioConverterOutputStatus_Error || error != nil) return false;
@@ -717,12 +907,14 @@ static void *wd_ca_conversion_main(void *context) {
         uint64_t sequence = 0;
         while (wd_ca_raw_ring_peek(&capture->raw, &slot, &sequence)) {
           if (atomic_load_explicit(&capture->conversion_exit, memory_order_acquire)) break;
-          if (!wd_ca_convert_slot(capture, session, slot)) {
+          uint64_t produced_frames = 0;
+          if (!wd_ca_convert_slot(capture, session, slot, &produced_frames)) {
             wd_ca_store_terminal(capture, WD_CA_STATUS_CONVERTER_FAILED);
             break;
           }
           wd_ca_raw_ring_release(&capture->raw, sequence);
-          if (!atomic_exchange_explicit(&capture->capture_confirmed, true, memory_order_acq_rel)) {
+          if (produced_frames != 0 &&
+              !atomic_exchange_explicit(&capture->capture_confirmed, true, memory_order_acq_rel)) {
             pthread_mutex_lock(&capture->wait_mutex);
             pthread_cond_broadcast(&capture->start_cond);
             pthread_mutex_unlock(&capture->wait_mutex);
@@ -778,6 +970,7 @@ static void wd_ca_clear_native_session(wd_ca_capture *capture) {
   atomic_store_explicit(&capture->capture_confirmed, false, memory_order_relaxed);
   atomic_store_explicit(&capture->level_mdb, -120000, memory_order_relaxed);
   capture->tap_frames = 0;
+  capture->quantum_ms = 0;
   capture->input_buffers = 0;
   capture->input_latency_seconds = 0;
 }
@@ -828,6 +1021,12 @@ static int wd_ca_teardown_session(wd_ca_capture *capture) {
     (void)pthread_join(capture->conversion_thread, NULL);
     capture->conversion_thread_started = false;
   }
+  wd_ca_log_diagnostics(capture,
+                        session,
+                        "teardown",
+                        capture->teardown_result == WD_CA_STATUS_OK ? "complete" : "error",
+                        capture->teardown_result,
+                        0);
   if (atomic_load_explicit(&capture->semaphore_created, memory_order_acquire)) {
     atomic_store_explicit(&capture->semaphore_created, false, memory_order_release);
     semaphore_destroy(mach_task_self(), capture->raw_semaphore);
@@ -966,6 +1165,17 @@ static void wd_ca_reset_session(wd_ca_capture *capture) {
   capture->teardown_detail[0] = '\0';
   atomic_store_explicit(&capture->conversion_exit, false, memory_order_relaxed);
   atomic_store_explicit(&capture->terminal_status, WD_CA_STATUS_OK, memory_order_relaxed);
+  atomic_store_explicit(&capture->tap_callbacks, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->tap_frames_seen, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->raw_buffers, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->raw_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->converted_buffers, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->converted_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->format_change_events, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->ignored_startup_format_events, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->tap_max_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->tap_last_buffer_count, 0, memory_order_relaxed);
+  atomic_store_explicit(&capture->tap_failure, WD_CA_TAP_FAILURE_NONE, memory_order_relaxed);
 }
 
 int wd_ca_capture_create(uint32_t sample_rate,
@@ -1011,6 +1221,17 @@ int wd_ca_capture_create(uint32_t sample_rate,
     atomic_init(&capture->capture_confirmed, false);
     atomic_init(&capture->generation, 0);
     atomic_init(&capture->overruns, 0);
+    atomic_init(&capture->tap_callbacks, 0);
+    atomic_init(&capture->tap_frames_seen, 0);
+    atomic_init(&capture->raw_buffers, 0);
+    atomic_init(&capture->raw_frames, 0);
+    atomic_init(&capture->converted_buffers, 0);
+    atomic_init(&capture->converted_frames, 0);
+    atomic_init(&capture->format_change_events, 0);
+    atomic_init(&capture->ignored_startup_format_events, 0);
+    atomic_init(&capture->tap_max_frames, 0);
+    atomic_init(&capture->tap_last_buffer_count, 0);
+    atomic_init(&capture->tap_failure, WD_CA_TAP_FAILURE_NONE);
     atomic_init(&capture->level_mdb, -120000);
     atomic_init(&capture->default_device_dirty, false);
     atomic_init(&capture->semaphore_created, false);
@@ -1048,6 +1269,7 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
                                  const char *device_uid,
                                  uint32_t quantum_ms,
                                  char **error) {
+  capture->quantum_ms = quantum_ms;
   atomic_store_explicit(&capture->explicit_device,
                         device_uid != NULL && device_uid[0] != '\0',
                         memory_order_release);
@@ -1099,28 +1321,38 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
                     (int)status);
     return WD_CA_STATUS_START_FAILED;
   }
+  wd_ca_set_device_strings(capture, device.id, device.uid, device.name);
 
-  session->_inputFormat = [session->_inputNode inputFormatForBus:0];
-  const AudioStreamBasicDescription *description = session->_inputFormat.streamDescription;
-  double hardware_rate = session->_inputFormat.sampleRate;
-  AVAudioChannelCount channels = session->_inputFormat.channelCount;
+  session->_nodeInputFormat = [session->_inputNode inputFormatForBus:0];
+  session->_tapFormat = [session->_inputNode outputFormatForBus:0];
+  const AudioStreamBasicDescription *description = session->_tapFormat.streamDescription;
+  double tap_rate = session->_tapFormat.sampleRate;
+  AVAudioChannelCount channels = session->_tapFormat.channelCount;
   if (description == NULL || description->mFormatID != kAudioFormatLinearPCM ||
-      description->mBytesPerFrame == 0 || !isfinite(hardware_rate) || hardware_rate <= 0.0 ||
+      description->mBytesPerFrame == 0 || !isfinite(tap_rate) || tap_rate <= 0.0 ||
       channels == 0 || channels > WD_CA_MAX_BUFFERS) {
+    char input_description[160];
+    char output_description[160];
+    wd_ca_describe_format(session->_nodeInputFormat, input_description, sizeof(input_description));
+    wd_ca_describe_format(session->_tapFormat, output_description, sizeof(output_description));
     wd_ca_device_info_destroy(&device);
-    wd_ca_set_error(error, "unsupported CoreAudio hardware format (rate %.3f, channels %u)",
-                    hardware_rate, channels);
+    wd_ca_set_error(error,
+                    "unsupported CoreAudio input-node output format; input={%s} output={%s}",
+                    input_description,
+                    output_description);
     return WD_CA_STATUS_START_FAILED;
   }
 
-  double requested_frames = round(hardware_rate * (double)quantum_ms / 1000.0);
-  if (!isfinite(requested_frames)) {
+  double tap_ms = quantum_ms;
+  if (tap_ms < WD_CA_MIN_TAP_MS) tap_ms = WD_CA_MIN_TAP_MS;
+  if (tap_ms > WD_CA_MAX_TAP_MS) tap_ms = WD_CA_MAX_TAP_MS;
+  double requested_frames = round(tap_rate * tap_ms / 1000.0);
+  if (!isfinite(requested_frames) || requested_frames > UINT32_MAX) {
     wd_ca_device_info_destroy(&device);
     wd_ca_set_error(error, "CoreAudio tap capacity overflow");
     return WD_CA_STATUS_START_FAILED;
   }
   if (requested_frames < 128.0) requested_frames = 128.0;
-  if (requested_frames > 4096.0) requested_frames = 4096.0;
   capture->tap_frames = (uint32_t)requested_frames;
 
   bool noninterleaved = (description->mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
@@ -1133,7 +1365,7 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
   }
   capture->input_buffers = buffer_count;
 
-  double slots_value = ceil(hardware_rate * 2.0 / (double)capture->tap_frames);
+  double slots_value = ceil(tap_rate * 2.0 / (double)capture->tap_frames);
   if (!isfinite(slots_value) || slots_value < 1.0 || slots_value > (double)SIZE_MAX ||
       !wd_ca_raw_ring_init(&capture->raw,
                            (size_t)slots_value,
@@ -1151,6 +1383,13 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
       !atomic_is_lock_free(&capture->raw.write_index) ||
       !atomic_is_lock_free(&capture->overruns) ||
       !atomic_is_lock_free(&capture->generation) ||
+      !atomic_is_lock_free(&capture->tap_callbacks) ||
+      !atomic_is_lock_free(&capture->tap_frames_seen) ||
+      !atomic_is_lock_free(&capture->raw_buffers) ||
+      !atomic_is_lock_free(&capture->raw_frames) ||
+      !atomic_is_lock_free(&capture->tap_max_frames) ||
+      !atomic_is_lock_free(&capture->tap_last_buffer_count) ||
+      !atomic_is_lock_free(&capture->tap_failure) ||
       !atomic_is_lock_free(&session->_tapContext->_capture) ||
       !atomic_is_lock_free(&session->_tapContext->_closing) ||
       !atomic_is_lock_free(&session->_tapContext->_callbacks) ||
@@ -1161,7 +1400,7 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
     return WD_CA_STATUS_START_FAILED;
   }
 
-  session->_inputScratch = [[AVAudioPCMBuffer alloc] initWithPCMFormat:session->_inputFormat
+  session->_inputScratch = [[AVAudioPCMBuffer alloc] initWithPCMFormat:session->_tapFormat
                                                          frameCapacity:capture->tap_frames];
   session->_inputScratch.frameLength = capture->tap_frames;
   AudioBufferList *scratch_buffers = session->_inputScratch.mutableAudioBufferList;
@@ -1183,10 +1422,11 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
   }
   session->_inputScratch.frameLength = 0;
 
-  session->_outputFormat = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:capture->sample_rate channels:1];
-  session->_converter = [[AVAudioConverter alloc] initFromFormat:session->_inputFormat
-                                                        toFormat:session->_outputFormat];
-  double output_value = ceil((double)capture->tap_frames * capture->sample_rate / hardware_rate) + 256.0;
+  session->_converterFormat = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:capture->sample_rate
+                                                                             channels:1];
+  session->_converter = [[AVAudioConverter alloc] initFromFormat:session->_tapFormat
+                                                        toFormat:session->_converterFormat];
+  double output_value = ceil((double)capture->tap_frames * capture->sample_rate / tap_rate) + 256.0;
   if (session->_converter == nil || !isfinite(output_value) || output_value > UINT32_MAX) {
     wd_ca_device_info_destroy(&device);
     wd_ca_set_error(error, "create CoreAudio 16 kHz mono converter");
@@ -1196,7 +1436,7 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
   session->_converter.downmix = channels > 1;
   uint32_t output_capacity = (uint32_t)output_value;
   if (output_capacity < 128) output_capacity = 128;
-  session->_outputScratch = [[AVAudioPCMBuffer alloc] initWithPCMFormat:session->_outputFormat
+  session->_outputScratch = [[AVAudioPCMBuffer alloc] initWithPCMFormat:session->_converterFormat
                                                           frameCapacity:output_capacity];
   if (session->_outputScratch == nil) {
     wd_ca_device_info_destroy(&device);
@@ -1223,9 +1463,6 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
   }
   atomic_store_explicit(&capture->semaphore_created, true, memory_order_release);
   result = wd_ca_install_device_listeners(capture, device.id, error);
-  if (result == WD_CA_STATUS_OK) {
-    wd_ca_set_device_strings(capture, device.id, device.uid, device.name);
-  }
   wd_ca_device_info_destroy(&device);
   return result;
 }
@@ -1244,20 +1481,53 @@ static void wd_ca_tap_leave(__unsafe_unretained WDCATapContext *context) {
   atomic_fetch_sub_explicit(&context->_callbacks, 1, memory_order_seq_cst);
 }
 
+static void wd_ca_record_tap_failure(wd_ca_capture *capture, wd_ca_tap_failure failure) {
+  int expected = WD_CA_TAP_FAILURE_NONE;
+  atomic_compare_exchange_strong_explicit(&capture->tap_failure,
+                                          &expected,
+                                          failure,
+                                          memory_order_relaxed,
+                                          memory_order_relaxed);
+}
+
 static void wd_ca_tap_copy(__unsafe_unretained WDCATapContext *context,
                            uint64_t generation,
                            __unsafe_unretained AVAudioPCMBuffer *buffer) {
   wd_ca_capture *capture = wd_ca_tap_enter(context);
   if (capture == NULL) return;
+  AVAudioFrameCount frames = buffer.frameLength;
+  const AudioBufferList *buffers = buffer.audioBufferList;
+  atomic_fetch_add_explicit(&capture->tap_callbacks, 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&capture->tap_frames_seen, frames, memory_order_relaxed);
+  atomic_store_explicit(&capture->tap_last_buffer_count,
+                        buffers == NULL ? 0 : buffers->mNumberBuffers,
+                        memory_order_relaxed);
+  uint32_t maximum = atomic_load_explicit(&capture->tap_max_frames, memory_order_relaxed);
+  while (frames > maximum &&
+         !atomic_compare_exchange_weak_explicit(&capture->tap_max_frames,
+                                                &maximum,
+                                                frames,
+                                                memory_order_relaxed,
+                                                memory_order_relaxed)) {
+  }
   if (generation != atomic_load_explicit(&capture->generation, memory_order_relaxed)) {
+    wd_ca_record_tap_failure(capture, WD_CA_TAP_FAILURE_GENERATION);
     (void)wd_ca_store_terminal(capture, WD_CA_STATUS_DEVICE_CHANGED);
     goto done;
   }
-  AVAudioFrameCount frames = buffer.frameLength;
-  const AudioBufferList *buffers = buffer.audioBufferList;
   if (frames == 0) goto done;
-  if (frames > capture->tap_frames || buffers == NULL ||
-      buffers->mNumberBuffers != capture->raw.buffer_count) {
+  if (frames > capture->tap_frames) {
+    wd_ca_record_tap_failure(capture, WD_CA_TAP_FAILURE_FRAME_CAPACITY);
+    (void)wd_ca_store_terminal(capture, WD_CA_STATUS_FORMAT_CHANGED);
+    goto done;
+  }
+  if (buffers == NULL) {
+    wd_ca_record_tap_failure(capture, WD_CA_TAP_FAILURE_BUFFER_LIST);
+    (void)wd_ca_store_terminal(capture, WD_CA_STATUS_FORMAT_CHANGED);
+    goto done;
+  }
+  if (buffers->mNumberBuffers != capture->raw.buffer_count) {
+    wd_ca_record_tap_failure(capture, WD_CA_TAP_FAILURE_BUFFER_COUNT);
     (void)wd_ca_store_terminal(capture, WD_CA_STATUS_FORMAT_CHANGED);
     goto done;
   }
@@ -1275,6 +1545,7 @@ static void wd_ca_tap_copy(__unsafe_unretained WDCATapContext *context,
     if (!wd_ca_checked_mul(capture->raw.bytes_per_frame[i], frames, &expected) ||
         expected > UINT32_MAX || source->mNumberChannels != capture->raw.channels_per_buffer[i] ||
         source->mDataByteSize != expected || source->mData == NULL) {
+      wd_ca_record_tap_failure(capture, WD_CA_TAP_FAILURE_BUFFER_LAYOUT);
       (void)wd_ca_store_terminal(capture, WD_CA_STATUS_FORMAT_CHANGED);
       goto done;
     }
@@ -1282,6 +1553,8 @@ static void wd_ca_tap_copy(__unsafe_unretained WDCATapContext *context,
     memcpy(wd_ca_raw_slot_buffer(&capture->raw, slot, i), source->mData, expected);
   }
   wd_ca_raw_ring_publish(&capture->raw, sequence);
+  atomic_fetch_add_explicit(&capture->raw_buffers, 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&capture->raw_frames, frames, memory_order_relaxed);
   semaphore_signal(capture->raw_semaphore);
 
 done:
@@ -1358,22 +1631,45 @@ int wd_ca_capture_start(wd_ca_capture *capture,
       wd_ca_reset_session(capture);
       atomic_store_explicit(&capture->state, WD_CA_STATE_STARTING, memory_order_release);
       result = wd_ca_prepare_session(capture, device_uid, quantum_ms, error);
-      if (result != WD_CA_STATUS_OK) return wd_ca_cleanup_failed_start(capture, result, error);
+      session = capture->session_ref == NULL ? nil : (__bridge WDCASession *)capture->session_ref;
+      if (result != WD_CA_STATUS_OK) {
+        wd_ca_append_start_diagnostics(capture,
+                                       session,
+                                       "prepare-failed",
+                                       result,
+                                       timeout_ms,
+                                       error);
+        return wd_ca_cleanup_failed_start(capture, result, error);
+      }
+      wd_ca_log_diagnostics(capture, session, "start", "prepared", WD_CA_STATUS_OK, timeout_ms);
       result = wd_ca_start_teardown_thread(capture, error);
-      if (result != WD_CA_STATUS_OK) return wd_ca_cleanup_failed_start(capture, result, error);
+      if (result != WD_CA_STATUS_OK) {
+        wd_ca_append_start_diagnostics(capture,
+                                       session,
+                                       "teardown-thread-failed",
+                                       result,
+                                       timeout_ms,
+                                       error);
+        return wd_ca_cleanup_failed_start(capture, result, error);
+      }
       uint64_t generation = atomic_fetch_add_explicit(&capture->generation, 1, memory_order_acq_rel) + 1;
       if (pthread_create(&capture->conversion_thread, NULL, wd_ca_conversion_main, capture) != 0) {
         wd_ca_set_error(error, "start CoreAudio conversion thread");
         result = WD_CA_STATUS_START_FAILED;
+        wd_ca_append_start_diagnostics(capture,
+                                       session,
+                                       "conversion-thread-failed",
+                                       result,
+                                       timeout_ms,
+                                       error);
         return wd_ca_cleanup_failed_start(capture, result, error);
       }
       capture->conversion_thread_started = true;
 
-      session = (__bridge WDCASession *)capture->session_ref;
       tap_context = session->_tapContext;
       [session->_inputNode installTapOnBus:0
                                 bufferSize:capture->tap_frames
-                                     format:session->_inputFormat
+                                     format:session->_tapFormat
                                      block:^(__unsafe_unretained AVAudioPCMBuffer *buffer,
                                              __unsafe_unretained AVAudioTime *when) {
         (void)when;
@@ -1384,9 +1680,21 @@ int wd_ca_capture_start(wd_ca_capture *capture,
       if (![session->_engine startAndReturnError:&start_error]) {
         wd_ca_set_nserror(error, @"start CoreAudio engine", start_error);
         result = WD_CA_STATUS_START_FAILED;
+        wd_ca_append_start_diagnostics(capture,
+                                       session,
+                                       "engine-start-failed",
+                                       result,
+                                       timeout_ms,
+                                       error);
         return wd_ca_cleanup_failed_start(capture, result, error);
       }
       capture->input_latency_seconds = session->_inputNode.presentationLatency;
+      wd_ca_log_diagnostics(capture,
+                            session,
+                            "start",
+                            "engine-running",
+                            WD_CA_STATUS_OK,
+                            timeout_ms);
 
       struct timespec deadline = wd_ca_deadline(timeout_ms);
       pthread_mutex_lock(&capture->wait_mutex);
@@ -1400,18 +1708,37 @@ int wd_ca_capture_start(wd_ca_capture *capture,
       if (terminal != WD_CA_STATUS_OK) {
         result = terminal;
         wd_ca_set_error(error, "CoreAudio capture terminated while starting (status %d)", terminal);
+        char branch[64];
+        snprintf(branch, sizeof(branch), "terminal-status-%d", terminal);
+        wd_ca_append_start_diagnostics(capture, session, branch, result, timeout_ms, error);
         return wd_ca_cleanup_failed_start(capture, result, error);
       }
       if (!confirmed) {
         result = WD_CA_STATUS_START_TIMEOUT;
         wd_ca_set_error(error, "CoreAudio capture did not produce audio within %u ms", timeout_ms);
+        wd_ca_append_start_diagnostics(capture, session, "timeout", result, timeout_ms, error);
         return wd_ca_cleanup_failed_start(capture, result, error);
       }
       atomic_store_explicit(&capture->state, WD_CA_STATE_CAPTURING, memory_order_release);
+      wd_ca_log_diagnostics(capture,
+                            session,
+                            "start",
+                            "confirmed",
+                            WD_CA_STATUS_OK,
+                            timeout_ms);
       return WD_CA_STATUS_OK;
     }
   } @catch (NSException *exception) {
     wd_ca_set_error(error, "start CoreAudio capture: %s", exception.reason.UTF8String ?: "Objective-C exception");
+    WDCASession *session = capture->session_ref == NULL
+      ? nil
+      : (__bridge WDCASession *)capture->session_ref;
+    wd_ca_append_start_diagnostics(capture,
+                                   session,
+                                   "exception",
+                                   WD_CA_STATUS_START_FAILED,
+                                   timeout_ms,
+                                   error);
     return wd_ca_cleanup_failed_start(capture, WD_CA_STATUS_START_FAILED, error);
   }
 }

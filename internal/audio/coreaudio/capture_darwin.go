@@ -28,7 +28,7 @@ import (
 
 const (
 	readWait       = 20 * time.Millisecond
-	startWait      = 2 * time.Second
+	startWait      = 5 * time.Second
 	eventPollWait  = 200 * time.Millisecond
 	eventQueueSize = 128
 )
