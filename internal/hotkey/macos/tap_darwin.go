@@ -21,6 +21,12 @@ import (
 
 const Supported = true
 
+// availableProbeTTL throttles the native availability probe. The probe spins up a
+// real session event tap; the status poll asks for availability several times a
+// second while the hotkey is unbound, so cache the answer this long between probes
+// instead of churning a tap each time.
+const availableProbeTTL = 2 * time.Second
+
 type Service struct {
 	mu       sync.Mutex
 	native   *C.wd_hotkey_service_t
@@ -30,6 +36,9 @@ type Service struct {
 	stopping bool
 	stopDone chan struct{}
 	cached   hotkey.Status
+
+	availAt  time.Time // when the native availability probe last ran (zero = never)
+	availErr error     // cached probe result, valid while availAt is within the TTL
 }
 
 func New() *Service {
@@ -43,19 +52,39 @@ func (s *Service) Available(ctx context.Context) error {
 	s.mu.Lock()
 	if s.native != nil {
 		status := s.nativeStatusLocked()
-		s.mu.Unlock()
 		if status.Running {
+			s.mu.Unlock()
 			return nil
 		}
 		if status.LastErrorCode != "" {
+			s.mu.Unlock()
 			return statusError(status.LastErrorCode)
 		}
-	} else {
-		s.mu.Unlock()
 	}
+	// No running listener: fall back to the native probe, which creates a real
+	// session event tap. Serve a recent probe result rather than spinning up a tap
+	// on every status poll.
+	if !s.availAt.IsZero() && time.Since(s.availAt) < availableProbeTTL {
+		err := s.availErr
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+
+	// Probe outside the lock — the cgo call spins up (and tears down) a tap.
 	var nativeError C.int32_t
+	var probeErr error
 	if !bool(C.wd_hotkey_available(&nativeError)) {
-		return errorForNative(int32(nativeError), "check global hotkey")
+		probeErr = errorForNative(int32(nativeError), "check global hotkey")
+	}
+
+	s.mu.Lock()
+	s.availAt = time.Now()
+	s.availErr = probeErr
+	s.mu.Unlock()
+
+	if probeErr != nil {
+		return probeErr
 	}
 	return ctx.Err()
 }

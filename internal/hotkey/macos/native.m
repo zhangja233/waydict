@@ -251,6 +251,7 @@ static wd_hotkey_listener_t *wd_hotkey_listener_create(wd_hotkey_service_t *serv
     CGEventTapEnable(listener->tap, false);
     listener->source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, listener->tap, 0);
     if (listener->source == NULL) {
+        CFMachPortInvalidate(listener->tap);
         CFRelease(listener->tap);
         free(listener);
         *error = WDHotkeyErrorRunLoopSource;
@@ -265,7 +266,11 @@ static void wd_hotkey_listener_destroy(wd_hotkey_listener_t *listener) {
         return;
     }
     CGEventTapEnable(listener->tap, false);
+    // Callers remove the source from the run loop before destroy; invalidate the
+    // port so the tap is deregistered (CFRelease alone leaves it in the system
+    // tap list — see wd_hotkey_available).
     CFRelease(listener->source);
+    CFMachPortInvalidate(listener->tap);
     CFRelease(listener->tap);
     free(listener);
 }
@@ -367,6 +372,10 @@ bool wd_hotkey_available(int32_t *native_error) {
         return false;
     }
     CGEventTapEnable(tap, false);
+    // CFRelease does NOT deregister an event tap — the CFMachPort must be
+    // invalidated or it lingers in the window server's tap list. Skipping this
+    // leaks one tap per probe call, and this probe is polled continuously.
+    CFMachPortInvalidate(tap);
     CFRelease(tap);
     return true;
 }
