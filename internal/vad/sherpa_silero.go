@@ -15,10 +15,20 @@ import (
 type SileroSegmenter struct {
 	cfg        config.VAD
 	sampleRate int
-	vad        *onnx.VoiceActivityDetector
+	vad        sileroVAD
 	baseTime   time.Time
 	nextID     int
 	degraded   bool
+}
+
+type sileroVAD interface {
+	AcceptWaveform([]float32)
+	IsEmpty() bool
+	IsSpeech() bool
+	Pop()
+	Front() *onnx.SpeechSegment
+	Reset()
+	Flush()
 }
 
 func NewSegmenter(cfg config.VAD, sampleRate int) Segmenter {
@@ -72,7 +82,10 @@ func (s *SileroSegmenter) Flush(commit bool, now time.Time) []asr.AudioSegment {
 	}
 	if commit {
 		s.vad.Flush()
-		return s.collect(false)
+		out := s.collect(false)
+		// sherpa Flush drains audio but retains the model's speech state.
+		s.Reset()
+		return out
 	}
 	s.Reset()
 	_ = now
@@ -102,6 +115,9 @@ func (s *SileroSegmenter) collect(degraded bool) []asr.AudioSegment {
 	for !s.vad.IsEmpty() {
 		front := s.vad.Front()
 		s.vad.Pop()
+		if front == nil || len(front.Samples) == 0 {
+			continue
+		}
 		id := "seg-silero-" + itoa6(s.nextID)
 		s.nextID++
 		started := s.baseTime
