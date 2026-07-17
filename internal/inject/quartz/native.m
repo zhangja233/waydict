@@ -67,6 +67,10 @@ int wd_quartz_post_unicode(wd_quartz_transaction *transaction, const uint16_t *t
     }
     wd_mark_event(down);
     wd_mark_event(up);
+    // The HID-state source inherits live modifier flags, so a still-held hotkey
+    // modifier would turn injected text into shortcuts (mod+h -> Hide).
+    CGEventSetFlags(down, (CGEventFlags)0);
+    CGEventSetFlags(up, (CGEventFlags)0);
     CGEventKeyboardSetUnicodeString(down, length, text);
     CGEventKeyboardSetUnicodeString(up, length, text);
     CGEventPost(kCGHIDEventTap, down);
@@ -93,6 +97,10 @@ int wd_quartz_post_key(wd_quartz_transaction *transaction, uint16_t keycode) {
     }
     wd_mark_event(down);
     wd_mark_event(up);
+    // Same reason as post_unicode: a held modifier would make Return/Tab into
+    // mod+Return / mod+Tab (the app switcher).
+    CGEventSetFlags(down, (CGEventFlags)0);
+    CGEventSetFlags(up, (CGEventFlags)0);
     CGEventPost(kCGHIDEventTap, down);
     CGEventPost(kCGHIDEventTap, up);
     CFRelease(down);
