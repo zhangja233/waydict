@@ -407,9 +407,10 @@ func runPermissions(args []string, stdout, stderr io.Writer, opts cliOptions) in
 		printJSON(stdout, resp.Data)
 		return exitcode.Success
 	}
-	for _, key := range []string{"microphone", "accessibility", "input_monitoring"} {
+	for _, key := range []string{"microphone", "accessibility"} {
 		fmt.Fprintf(stdout, "%s=%v\n", key, resp.Data[key])
 	}
+	fmt.Fprintf(stdout, "input_monitoring=%v (informational; not required)\n", resp.Data["input_monitoring"])
 	return exitcode.Success
 }
 
@@ -1254,7 +1255,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 				host = response.Status.Platform.Host
 			}
 			fmt.Fprintf(stdout, "OK   %-18s host=%s\n", "app host", host)
-			fmt.Fprintf(stdout, "INFO %-18s microphone=%v accessibility=%v input_monitoring=%v\n", "permissions", response.Data["microphone"], response.Data["accessibility"], response.Data["input_monitoring"])
+			fmt.Fprintf(stdout, "INFO %-18s microphone=%v accessibility=%v input_monitoring=%v (informational; not required)\n", "permissions", response.Data["microphone"], response.Data["accessibility"], response.Data["input_monitoring"])
 		}
 	}
 	if resolutionErr == nil {

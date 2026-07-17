@@ -24,6 +24,7 @@ import (
 	"waydict/internal/inject"
 	"waydict/internal/model"
 	"waydict/internal/modelinstall"
+	"waydict/internal/permissions"
 	"waydict/pkg/api"
 )
 
@@ -563,6 +564,31 @@ func TestDarwinNoLaunchSkipsLauncher(t *testing.T) {
 	_, err := sendRuntimeRequest(context.Background(), "/tmp/waydict-501/control.sock", control.NewRequest("status", nil), cliOptions{noLaunch: true})
 	if !errors.Is(err, os.ErrNotExist) || launched {
 		t.Fatalf("error=%v launched=%t", err, launched)
+	}
+}
+
+func TestPermissionsLabelsInputMonitoringInformational(t *testing.T) {
+	forceCLIPlatform(t, "darwin")
+	t.Setenv("HOME", t.TempDir())
+	oldSend := controlSend
+	t.Cleanup(func() { controlSend = oldSend })
+	controlSend = func(_ context.Context, _ string, request control.Request) (control.Response, error) {
+		if request.Command != "permissions" {
+			t.Fatalf("command = %q", request.Command)
+		}
+		return control.OKData(request.ID, api.Status{}, map[string]any{
+			"microphone":       permissions.Granted,
+			"accessibility":    permissions.Granted,
+			"input_monitoring": permissions.NotGranted,
+		}), nil
+	}
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--no-launch", "permissions"}, &stdout, &stderr); got != exitcode.Success {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", got, stdout.String(), stderr.String())
+	}
+	want := "microphone=granted\naccessibility=granted\ninput_monitoring=not_granted (informational; not required)\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 

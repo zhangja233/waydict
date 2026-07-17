@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"waydict/internal/app"
+	"waydict/internal/apperr"
 	"waydict/internal/audio"
 	"waydict/internal/config"
 	"waydict/internal/hotkey"
@@ -150,6 +151,57 @@ func TestSleepAndSessionRecoveryWaitsForActiveSession(t *testing.T) {
 	}
 }
 
+func TestSyncHotkeyPermissionRequirements(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot permissions.Snapshot
+		wantCode string
+		starts   int32
+	}{
+		{
+			name: "accessibility granted without input monitoring",
+			snapshot: permissions.Snapshot{
+				Accessibility:   permissions.Granted,
+				InputMonitoring: permissions.NotGranted,
+			},
+			starts: 1,
+		},
+		{
+			name: "accessibility not granted",
+			snapshot: permissions.Snapshot{
+				Accessibility:   permissions.NotGranted,
+				InputMonitoring: permissions.Granted,
+			},
+			wantCode: apperr.CodePermissionAccessibilityDenied,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cfg := config.DefaultsFor("darwin", config.PlatformPaths{})
+			permissionSource := staticControllerPermissions{snapshot: test.snapshot}
+			hotkeyService := &controllerRecoveryHotkey{}
+			application := app.New(ctx, cfg, app.Dependencies{
+				PermissionSource: permissionSource,
+				Hotkey:           hotkeyService,
+			})
+			controller := &appController{runtime: &app.Runtime{App: application, Platform: app.PlatformDependencies{
+				PermissionSource: permissionSource,
+				Hotkey:           hotkeyService,
+			}}}
+
+			err := controller.syncHotkey(ctx, false)
+			if got := apperr.Code(err); got != test.wantCode {
+				t.Fatalf("error code = %q, want %q (err=%v)", got, test.wantCode, err)
+			}
+			if got := hotkeyService.starts.Load(); got != test.starts {
+				t.Fatalf("hotkey starts = %d, want %d", got, test.starts)
+			}
+		})
+	}
+}
+
 func waitForInactive(t *testing.T, application *app.App) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -222,6 +274,16 @@ func (*controllerPermissions) Request(context.Context, permissions.Kind) (permis
 	return permissions.Granted, nil
 }
 func (*controllerPermissions) OpenSettings(context.Context, permissions.Kind) error { return nil }
+
+type staticControllerPermissions struct{ snapshot permissions.Snapshot }
+
+func (p staticControllerPermissions) Snapshot(context.Context) (permissions.Snapshot, error) {
+	return p.snapshot, nil
+}
+func (staticControllerPermissions) Request(context.Context, permissions.Kind) (permissions.State, error) {
+	return permissions.Granted, nil
+}
+func (staticControllerPermissions) OpenSettings(context.Context, permissions.Kind) error { return nil }
 
 type controllerDevices struct{ calls atomic.Int32 }
 

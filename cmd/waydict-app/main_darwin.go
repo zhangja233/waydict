@@ -193,7 +193,7 @@ func (c *appController) run(ctx context.Context) {
 	}()
 
 	go c.dispatchEvents(ctx)
-	if err := c.syncHotkey(ctx, false); err != nil && apperr.Code(err) != apperr.CodePermissionInputMonitoringDenied {
+	if err := c.syncHotkey(ctx, false); err != nil && apperr.Code(err) != apperr.CodePermissionAccessibilityDenied {
 		c.host.ShowError(apperr.Code(err), err.Error())
 	}
 	go c.pollStatus(ctx)
@@ -567,8 +567,8 @@ func (c *appController) syncHotkey(ctx context.Context, retryUnavailable bool) e
 	if err != nil {
 		return err
 	}
-	if snapshot.InputMonitoring != permissions.Granted {
-		return apperr.New(apperr.CodePermissionInputMonitoringDenied, "configure global hotkey", errors.New("Input Monitoring permission is not granted"))
+	if snapshot.Accessibility != permissions.Granted {
+		return apperr.New(apperr.CodePermissionAccessibilityDenied, "configure global hotkey", errors.New("Accessibility permission is not granted"))
 	}
 	if status.Running {
 		if status.Binding != binding {
@@ -628,7 +628,7 @@ func (c *appController) pollStatus(ctx context.Context) {
 	havePrevious := false
 	for {
 		view := c.currentView(ctx)
-		granted := view.InputMonitoring == string(permissions.Granted)
+		granted := view.Accessibility == string(permissions.Granted)
 		enabled, _, bindingErr := c.runtime.App.HotkeyBinding()
 		if !enabled {
 			c.hotkeyRestartRequired.Store(false)
