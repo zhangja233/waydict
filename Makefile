@@ -15,6 +15,9 @@ empty :=
 space := $(empty) $(empty)
 comma := ,
 MACOS_BUILD_TAGS_METADATA := $(subst $(space),$(comma),$(strip $(BUILD_TAGS_MACOS)))
+# Ad-hoc signatures make TCC pin the cdhash, so every rebuild voids Accessibility
+# grants. Set to a stable self-signed identity to keep them across rebuilds.
+MACOS_DEV_SIGN_ID ?= -
 MACOS_APP := build/Waydict.app
 MACOS_CONTENTS := $(MACOS_APP)/Contents
 MACOS_LDFLAGS := -s -w -X waydict/internal/buildinfo.Version=$(VERSION) -X waydict/internal/buildinfo.Commit=$(COMMIT) -X waydict/internal/buildinfo.BuildNumber=$(BUILD_NUMBER) -X waydict/internal/buildinfo.BuildTags=$(MACOS_BUILD_TAGS_METADATA)
@@ -62,11 +65,11 @@ build-macos-dev: release-inputs
 	printf 'APPL????' > $(MACOS_CONTENTS)/PkgInfo
 	plutil -lint $(MACOS_CONTENTS)/Info.plist
 	plutil -lint $(MACOS_CONTENTS)/Resources/en.lproj/Localizable.strings $(MACOS_CONTENTS)/Resources/en.lproj/InfoPlist.strings
-	# Development bundles remain ad-hoc signed without hardened runtime.
-	for dylib in $(MACOS_CONTENTS)/Frameworks/*.dylib; do codesign -s - --force $$dylib; done
-	codesign -s - --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_CONTENTS)/MacOS/waydict
-	codesign -s - --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_CONTENTS)/MacOS/waydict-app
-	codesign -s - --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_APP)
+	# Development bundles stay unhardened; identity is MACOS_DEV_SIGN_ID (ad-hoc by default).
+	for dylib in $(MACOS_CONTENTS)/Frameworks/*.dylib; do codesign -s $(MACOS_DEV_SIGN_ID) --force $$dylib; done
+	codesign -s $(MACOS_DEV_SIGN_ID) --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_CONTENTS)/MacOS/waydict
+	codesign -s $(MACOS_DEV_SIGN_ID) --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_CONTENTS)/MacOS/waydict-app
+	codesign -s $(MACOS_DEV_SIGN_ID) --force --entitlements packaging/macos/Waydict.entitlements $(MACOS_APP)
 
 build-macos-arm64: release-inputs
 	bash scripts/macos/build-app-arch.sh arm64 '$(VERSION)' '$(BUILD_NUMBER)' '$(COMMIT)'
