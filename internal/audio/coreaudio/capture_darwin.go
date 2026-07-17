@@ -368,6 +368,10 @@ func testTapGate() int {
 	return int(C.wd_ca_test_tap_gate())
 }
 
+func testStartupFormatChange() int {
+	return int(C.wd_ca_test_startup_format_change())
+}
+
 func testTeardownTimeout() (int, uint32) {
 	var elapsed C.uint32_t
 	result := C.wd_ca_test_teardown_timeout(&elapsed)

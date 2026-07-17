@@ -24,6 +24,12 @@ func TestNativeTapGate(t *testing.T) {
 	}
 }
 
+func TestNativeStartupFormatChange(t *testing.T) {
+	if result := testStartupFormatChange(); result != 0 {
+		t.Fatalf("native startup format-change self-test returned %d", result)
+	}
+}
+
 func TestNativeTeardownTimeout(t *testing.T) {
 	result, elapsedMS := testTeardownTimeout()
 	if result != 0 {

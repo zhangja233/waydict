@@ -107,6 +107,7 @@ int wd_ca_test_convert(const float *interleaved,
                        uint32_t *out_frames,
                        char **error);
 int wd_ca_test_tap_gate(void);
+int wd_ca_test_startup_format_change(void);
 int wd_ca_test_teardown_timeout(uint32_t *elapsed_ms);
 
 void wd_ca_free(void *value);
