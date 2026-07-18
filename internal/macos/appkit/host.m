@@ -59,9 +59,8 @@ static NSDictionary *WDInstallationInfo(void) {
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     [self showInstallationAlertIfNeeded];
-    if (![self.installation[@"blocked"] boolValue]) {
-        [self showOnboardingIfNeeded];
-    }
+    // Onboarding removed: it is never shown. Permissions are granted directly in System
+    // Settings and models via the menu / `waydict model install`.
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
@@ -131,7 +130,6 @@ static NSDictionary *WDInstallationInfo(void) {
     self.hostError = message ?: @"";
     NSUInteger generation = ++self.hostErrorGeneration;
     [self applyViewModel:self.viewModel];
-    [self.onboarding showError:message ?: @""];
     if (![code isEqualToString:@"app_translocated"]) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             if (self.hostErrorGeneration == generation) {
@@ -287,7 +285,6 @@ void waydict_host_update_status(waydict_host_t opaque, const char *json, size_t 
             os_unfair_lock_unlock(&WDUpdateLock);
             pendingHost.viewModel = pending;
             [pendingHost applyViewModel:pending];
-            [pendingHost.onboarding refreshForViewModel];
         });
     }
 }

@@ -9,8 +9,6 @@ static inline NSString *WDLocalized(NSString *key, NSString *fallback) {
     return [[NSBundle mainBundle] localizedStringForKey:key value:fallback table:@"Localizable"];
 }
 
-@class WDOnboardingController;
-
 @interface WDHost : NSObject <NSApplicationDelegate, NSMenuDelegate>
 
 @property(nonatomic, strong) NSStatusItem *statusItem;
@@ -42,7 +40,6 @@ static inline NSString *WDLocalized(NSString *key, NSString *fallback) {
 @property(nonatomic, strong) NSDictionary *viewModel;
 @property(nonatomic, strong) NSDictionary *installation;
 @property(nonatomic, copy) NSString *hostError;
-@property(nonatomic, strong) WDOnboardingController *onboarding;
 @property(nonatomic, strong) NSWindow *diagnosticsWindow;
 @property(nonatomic, copy) NSString *diagnosticsText;
 @property(nonatomic, strong) dispatch_source_t memoryPressureSource;
@@ -65,23 +62,10 @@ static inline NSString *WDLocalized(NSString *key, NSString *fallback) {
 - (void)applyViewModel:(NSDictionary *)viewModel;
 @end
 
-@interface WDHost (Onboarding)
-- (void)showOnboardingIfNeeded;
-@end
-
 @interface WDHost (Diagnostics)
 - (void)showDiagnostics;
 - (void)copyDiagnostics;
 - (NSString *)diagnosticsReport;
-@end
-
-@interface WDOnboardingController : NSWindowController
-
-- (instancetype)initWithHost:(WDHost *)host;
-- (void)show;
-- (void)showError:(NSString *)message;
-- (void)refreshForViewModel;
-
 @end
 
 #endif
