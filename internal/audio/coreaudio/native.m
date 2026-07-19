@@ -1364,7 +1364,7 @@ static int wd_ca_prepare_session(wd_ca_capture *capture,
   wd_ca_set_device_strings(capture, device.id, device.uid, device.name);
 
   session->_nodeInputFormat = [session->_inputNode inputFormatForBus:0];
-  session->_tapFormat = [session->_inputNode outputFormatForBus:0];
+  session->_tapFormat = session->_nodeInputFormat;
   const AudioStreamBasicDescription *description = session->_tapFormat.streamDescription;
   double tap_rate = session->_tapFormat.sampleRate;
   AVAudioChannelCount channels = session->_tapFormat.channelCount;
