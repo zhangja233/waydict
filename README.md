@@ -97,11 +97,27 @@ The default `[asr] engine = "auto"` prefers `whisper-cpp` with the `ggml-large-v
 
 ASR engine changes require a daemon restart; config reload does not re-resolve the engine.
 
+## Remote ASR
+
+`[asr] engine = "remote"` decodes on another host's daemon instead of locally, so a CPU-only laptop can borrow a desktop's GPU. Capture, VAD, post-processing, and injection all stay local — only the decode crosses. See [docs/remote.md](docs/remote.md) for the full setup.
+
+waydict does not open a network socket for this. It dials a Unix socket at `[asr.remote] socket` and leaves reachability, authentication, and encryption to whatever points that socket at the peer — in practice an SSH forward:
+
+```sh
+peer_runtime=$(ssh "$peer" 'echo "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"')
+ssh -N -o ExitOnForwardFailure=yes \
+  -L "$XDG_RUNTIME_DIR/waydict/asr-remote.sock:$peer_runtime/waydict/waydict.sock" "$peer"
+```
+
+The serving host opts in with `[daemon] serve_remote_asr = true`; it then answers `transcribe` with its already-loaded engine, adding no second model to VRAM. The request carries 16-bit PCM (a 5s clip is ~160 KB) and the reply carries text; the serving host neither logs the transcript nor includes its own status in the reply.
+
+When the peer is unreachable — roaming, desktop asleep, tunnel down — `[asr.remote] fallback = "sherpa-onnx"` decodes locally instead, using the same `[asr]` model keys. A refused dial fails in microseconds, and the remote attempt only spends half the segment's deadline, so the fallback always has time to finish. Set `fallback = "none"` to fail loudly instead. `waydict status --json` reports `asr.remote.served` as `remote` or `fallback` for the last segment, and `waydict doctor` probes the peer.
+
 ## Notes
 
 - Garbled output usually means the mic is clipping — lower its gain: `wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.6`.
 - Tune `[asr] num_threads` with `waydict bench`; target real-time factor ≲ 0.7.
-- Privacy: no network except `model install`; transcripts redacted from logs/status; audio not saved; capture paused when idle.
+- Privacy: no network except `model install`; transcripts redacted from logs/status; audio not saved; capture paused when idle. `engine = "remote"` still opens no network socket — it dials a Unix socket you point at a peer.
 - More help: [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## License

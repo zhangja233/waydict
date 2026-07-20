@@ -55,6 +55,8 @@ func CheckConfig(cfg config.Config, opts CheckOptions) CheckResult {
 		return checkWhisperConfig(cfg, opts)
 	case asr.EngineAuto:
 		return checkAutoConfig(cfg, opts)
+	case asr.EngineRemote:
+		return checkRemoteConfig(cfg, opts)
 	default:
 		res := CheckResult{Engine: cfg.ASR.Engine, OK: true}
 		res.addErr(fmt.Sprintf("unknown asr.engine %q", cfg.ASR.Engine))
@@ -112,6 +114,18 @@ func checkAutoConfig(cfg config.Config, opts CheckOptions) CheckResult {
 	res.Items = append(res.Items, whisper.Items...)
 	res.addErr(fmt.Sprintf("no usable ASR model; sherpa-onnx: %s; whisper-cpp: %s", strings.Join(sherpa.Errors, "; "), strings.Join(whisper.Errors, "; ")))
 	return res
+}
+
+// checkRemoteConfig validates only what this host decodes with. The peer owns
+// its own models, so a remote engine without a fallback has nothing to check.
+func checkRemoteConfig(cfg config.Config, opts CheckOptions) CheckResult {
+	if cfg.ASR.Remote.Fallback == asr.FallbackNone {
+		return CheckResult{Engine: asr.EngineRemote, OK: true}
+	}
+	sherpaCfg := cfg
+	sherpaCfg.ASR.Engine = asr.EngineSherpa
+	sherpaCfg.ASR.Provider = asr.ProviderCPU
+	return checkSherpaConfig(sherpaCfg, opts)
 }
 
 func mergeSuccessfulCheck(dst *CheckResult, src CheckResult) {

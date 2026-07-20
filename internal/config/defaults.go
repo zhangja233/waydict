@@ -85,6 +85,13 @@ func DefaultsFor(platform string, paths PlatformPaths) Config {
 			Decoder:        "decoder.onnx",
 			Joiner:         "joiner.onnx",
 			Tokens:         "tokens.txt",
+			Remote: ASRRemote{
+				Socket:           paths.RemoteASRSocketPath,
+				Codec:            asr.CodecPCMS16LE,
+				DialTimeoutMS:    300,
+				RequestTimeoutMS: 8000,
+				Fallback:         asr.EngineSherpa,
+			},
 		},
 		Injection: Injection{
 			Engine:      "wtype",

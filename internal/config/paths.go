@@ -8,16 +8,21 @@ import (
 )
 
 type PlatformPaths struct {
-	ConfigDir         string
-	ConfigFile        string
-	ModelsDir         string
-	StateDir          string
-	LogFile           string
-	CacheDir          string
-	DebugSegmentsDir  string
-	SocketPath        string
-	LegacyConfigFiles []string
-	SwaySocket        string
+	ConfigDir        string
+	ConfigFile       string
+	ModelsDir        string
+	StateDir         string
+	LogFile          string
+	CacheDir         string
+	DebugSegmentsDir string
+	SocketPath       string
+	// RemoteASRSocketPath is where engine = "remote" looks for the peer. Nothing
+	// in waydict creates it: an SSH -L forward binds it to another host's
+	// SocketPath. It sits beside SocketPath so both inherit that directory's
+	// owner-only mode.
+	RemoteASRSocketPath string
+	LegacyConfigFiles   []string
+	SwaySocket          string
 }
 
 type PathEnvironment struct {
@@ -74,15 +79,16 @@ func PathsFor(platform string, env PathEnvironment) PlatformPaths {
 		appRoot := filepath.Join(configRoot, "Waydict")
 		stateDir := filepath.Join(appRoot, "state")
 		return PlatformPaths{
-			ConfigDir:         appRoot,
-			ConfigFile:        filepath.Join(appRoot, "config.toml"),
-			ModelsDir:         filepath.Join(appRoot, "models"),
-			StateDir:          stateDir,
-			LogFile:           filepath.Join(home, "Library", "Logs", "Waydict", "waydict.log"),
-			CacheDir:          filepath.Join(cacheRoot, "Waydict"),
-			DebugSegmentsDir:  filepath.Join(stateDir, "segments"),
-			SocketPath:        filepath.Join("/tmp", fmt.Sprintf("waydict-%d", env.UID), "control.sock"),
-			LegacyConfigFiles: legacy,
+			ConfigDir:           appRoot,
+			ConfigFile:          filepath.Join(appRoot, "config.toml"),
+			ModelsDir:           filepath.Join(appRoot, "models"),
+			StateDir:            stateDir,
+			LogFile:             filepath.Join(home, "Library", "Logs", "Waydict", "waydict.log"),
+			CacheDir:            filepath.Join(cacheRoot, "Waydict"),
+			DebugSegmentsDir:    filepath.Join(stateDir, "segments"),
+			SocketPath:          filepath.Join("/tmp", fmt.Sprintf("waydict-%d", env.UID), "control.sock"),
+			RemoteASRSocketPath: filepath.Join("/tmp", fmt.Sprintf("waydict-%d", env.UID), "asr-remote.sock"),
+			LegacyConfigFiles:   legacy,
 		}
 	}
 
@@ -116,14 +122,15 @@ func PathsFor(platform string, env PathEnvironment) PlatformPaths {
 	}
 	stateDir := filepath.Join(stateRoot, "waydict")
 	return PlatformPaths{
-		ConfigDir:        filepath.Join(configRoot, "waydict"),
-		ConfigFile:       filepath.Join(configRoot, "waydict.toml"),
-		ModelsDir:        filepath.Join(dataRoot, "waydict", "models"),
-		StateDir:         stateDir,
-		LogFile:          filepath.Join(stateDir, "waydict.log"),
-		CacheDir:         filepath.Join(cacheRoot, "waydict"),
-		DebugSegmentsDir: filepath.Join(stateDir, "segments"),
-		SocketPath:       filepath.Join(runtimeRoot, "waydict", "waydict.sock"),
+		ConfigDir:           filepath.Join(configRoot, "waydict"),
+		ConfigFile:          filepath.Join(configRoot, "waydict.toml"),
+		ModelsDir:           filepath.Join(dataRoot, "waydict", "models"),
+		StateDir:            stateDir,
+		LogFile:             filepath.Join(stateDir, "waydict.log"),
+		CacheDir:            filepath.Join(cacheRoot, "waydict"),
+		DebugSegmentsDir:    filepath.Join(stateDir, "segments"),
+		SocketPath:          filepath.Join(runtimeRoot, "waydict", "waydict.sock"),
+		RemoteASRSocketPath: filepath.Join(runtimeRoot, "waydict", "asr-remote.sock"),
 		LegacyConfigFiles: []string{
 			filepath.Join(configRoot, "waydict.toml"),
 			filepath.Join(configRoot, "waydict", "config.toml"),

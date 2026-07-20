@@ -7,10 +7,15 @@ const (
 	EngineAuto    = "auto"
 	EngineSherpa  = "sherpa-onnx"
 	EngineWhisper = "whisper-cpp"
+	EngineRemote  = "remote"
 
 	ProviderCPU    = "cpu"
 	ProviderMetal  = "metal"
 	ProviderVulkan = "vulkan"
+	ProviderRemote = "remote"
+
+	// FallbackNone opts a remote engine out of local decoding entirely.
+	FallbackNone = "none"
 )
 
 // Resolution records how the engine was chosen, for startup logs, status, and doctor.
@@ -53,6 +58,11 @@ type ResolverDeps struct {
 	NewWhisper               func(modelPath, provider string, device, threads int) (Engine, error)
 	ProbeAccelerator         func(provider string, device int) (Accelerator, error)
 	WhisperModelPath         func() (string, error) // installed ggml model, or why not
+	// NewRemote wraps fallback, which is nil when remote decoding is mandatory.
+	NewRemote func(fallback Engine) (Engine, error)
+	// RemoteFallback names the local engine a remote engine should wrap, or
+	// FallbackNone.
+	RemoteFallback string
 }
 
 // Resolve picks the engine per the configured asr.engine value.
@@ -74,6 +84,13 @@ func Resolve(engine, provider string, device int, deps ResolverDeps) (Engine, Re
 		}
 		return eng, res, nil
 
+	case EngineRemote:
+		eng, res, err := resolveRemote(deps)
+		if err != nil {
+			return nil, Resolution{}, err
+		}
+		return eng, res, nil
+
 	case EngineAuto:
 		eng, res, err := resolveWhisper(provider, device, deps)
 		if err != nil {
@@ -88,6 +105,34 @@ func Resolve(engine, provider string, device int, deps ResolverDeps) (Engine, Re
 	default:
 		return nil, Resolution{}, fmt.Errorf("unknown asr.engine %q", engine)
 	}
+}
+
+// resolveRemote never probes the peer: an unreachable host must not stop the
+// daemon from starting, since the whole point of the fallback is to keep
+// dictation working while roaming. Only a misconfigured fallback is fatal.
+func resolveRemote(deps ResolverDeps) (Engine, Resolution, error) {
+	if deps.NewRemote == nil {
+		return nil, Resolution{}, fmt.Errorf("remote engine not wired")
+	}
+	var fallback Engine
+	switch deps.RemoteFallback {
+	case FallbackNone:
+	case EngineSherpa:
+		if deps.NewSherpa == nil {
+			return nil, Resolution{}, fmt.Errorf("sherpa-onnx fallback not wired")
+		}
+		fallback = deps.NewSherpa()
+	default:
+		return nil, Resolution{}, fmt.Errorf("asr.remote.fallback must be %s or %s", EngineSherpa, FallbackNone)
+	}
+	eng, err := deps.NewRemote(fallback)
+	if err != nil {
+		if fallback != nil {
+			_ = fallback.Close()
+		}
+		return nil, Resolution{}, fmt.Errorf("remote engine init: %w", err)
+	}
+	return eng, Resolution{Engine: EngineRemote, Provider: ProviderRemote}, nil
 }
 
 func resolveWhisper(provider string, device int, deps ResolverDeps) (Engine, Resolution, error) {

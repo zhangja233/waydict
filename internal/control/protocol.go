@@ -9,11 +9,15 @@ import (
 
 const Version = 1
 
+// Payload carries binary bodies (currently only ASR audio) that would be
+// wasteful to base64 into Args. It travels after the JSON line as exactly
+// Args["payload_bytes"] raw bytes, so it is never part of the JSON itself.
 type Request struct {
 	Version int            `json:"version"`
 	ID      string         `json:"id"`
 	Command string         `json:"command"`
 	Args    map[string]any `json:"args"`
+	Payload []byte         `json:"-"`
 }
 
 type Response struct {

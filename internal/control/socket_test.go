@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -198,7 +199,7 @@ func TestReadFrameBoundsAndUTF8(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := readFrame(bytes.NewReader(tc.data))
+			_, err := readFrame(bufio.NewReader(bytes.NewReader(tc.data)))
 			if (err == nil) != tc.ok {
 				t.Fatalf("readFrame() error = %v, ok=%t", err, tc.ok)
 			}

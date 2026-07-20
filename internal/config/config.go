@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"waydict/internal/asr"
+	"waydict/internal/control"
 	"waydict/internal/hotkey"
 )
 
@@ -36,6 +37,10 @@ type Daemon struct {
 	AutoStopAfterSilenceSeconds int    `toml:"auto_stop_after_silence_seconds"`
 	RedactTranscriptsInLogs     bool   `toml:"redact_transcripts_in_logs"`
 	LogLevel                    string `toml:"log_level"`
+	// ServeRemoteASR answers `transcribe` from peers on the control socket,
+	// lending this host's engine to clients that reach it. Off by default so a
+	// daemon never becomes a decode service by accident.
+	ServeRemoteASR bool `toml:"serve_remote_asr"`
 }
 
 type Audio struct {
@@ -64,20 +69,34 @@ type VAD struct {
 }
 
 type ASR struct {
-	Engine         string  `toml:"engine"`
-	Provider       string  `toml:"provider"`
-	WhisperModel   string  `toml:"whisper_model"`
-	GPUDevice      int     `toml:"gpu_device"`
-	ModelType      string  `toml:"model_type"`
-	DecodingMethod string  `toml:"decoding_method"`
-	NumThreads     int     `toml:"num_threads"`
-	MaxActivePaths int     `toml:"max_active_paths"`
-	BlankPenalty   float32 `toml:"blank_penalty"`
-	ModelDir       string  `toml:"model_dir"`
-	Encoder        string  `toml:"encoder"`
-	Decoder        string  `toml:"decoder"`
-	Joiner         string  `toml:"joiner"`
-	Tokens         string  `toml:"tokens"`
+	Engine         string    `toml:"engine"`
+	Provider       string    `toml:"provider"`
+	WhisperModel   string    `toml:"whisper_model"`
+	GPUDevice      int       `toml:"gpu_device"`
+	ModelType      string    `toml:"model_type"`
+	DecodingMethod string    `toml:"decoding_method"`
+	NumThreads     int       `toml:"num_threads"`
+	MaxActivePaths int       `toml:"max_active_paths"`
+	BlankPenalty   float32   `toml:"blank_penalty"`
+	ModelDir       string    `toml:"model_dir"`
+	Encoder        string    `toml:"encoder"`
+	Decoder        string    `toml:"decoder"`
+	Joiner         string    `toml:"joiner"`
+	Tokens         string    `toml:"tokens"`
+	Remote         ASRRemote `toml:"remote"`
+}
+
+// ASRRemote configures engine = "remote": decode on the daemon behind Socket,
+// which something outside waydict (an SSH -L forward) points at another host.
+// The remaining ASR fields configure Fallback when it is an engine name.
+type ASRRemote struct {
+	Socket           string `toml:"socket"`
+	Codec            string `toml:"codec"`
+	DialTimeoutMS    int    `toml:"dial_timeout_ms"`
+	RequestTimeoutMS int    `toml:"request_timeout_ms"`
+	// Fallback names the local engine used whenever the peer is unreachable, or
+	// "none" to fail instead.
+	Fallback string `toml:"fallback"`
 }
 
 type Injection struct {
@@ -282,6 +301,7 @@ func (c *Config) Expand() error {
 		&c.VAD.Model,
 		&c.ASR.ModelDir,
 		&c.ASR.WhisperModel,
+		&c.ASR.Remote.Socket,
 		&c.Focus.Socket,
 		&c.Sway.Socket,
 		&c.Debug.SaveAudioDir,
@@ -524,8 +544,41 @@ func (c Config) ValidateASRFor(capabilities CapabilitySet) error {
 			}
 		}
 		return nil
+	case asr.EngineRemote:
+		return c.validateRemoteASR(capabilities)
 	default:
-		return fmt.Errorf("asr.engine must be auto, sherpa-onnx, or whisper-cpp")
+		return fmt.Errorf("asr.engine must be auto, sherpa-onnx, whisper-cpp, or remote")
+	}
+}
+
+func (c Config) validateRemoteASR(capabilities CapabilitySet) error {
+	remote := c.ASR.Remote
+	if strings.TrimSpace(remote.Socket) == "" {
+		return fmt.Errorf("asr.remote.socket must not be empty")
+	}
+	if err := control.ValidateSocketPathFor(capabilities.Platform, remote.Socket); err != nil {
+		return fmt.Errorf("asr.remote.socket: %w", err)
+	}
+	if remote.Socket == c.Daemon.Socket {
+		return fmt.Errorf("asr.remote.socket must differ from daemon.socket, or the daemon would decode through itself")
+	}
+	if remote.Codec != asr.CodecPCMS16LE {
+		return fmt.Errorf("asr.remote.codec must be %s", asr.CodecPCMS16LE)
+	}
+	if remote.DialTimeoutMS <= 0 {
+		return fmt.Errorf("asr.remote.dial_timeout_ms must be positive")
+	}
+	if remote.RequestTimeoutMS <= 0 {
+		return fmt.Errorf("asr.remote.request_timeout_ms must be positive")
+	}
+	switch remote.Fallback {
+	case asr.FallbackNone:
+		return nil
+	case asr.EngineSherpa:
+		// The remaining [asr] keys configure the fallback, so they must hold up.
+		return c.validateSherpaASR(capabilities)
+	default:
+		return fmt.Errorf("asr.remote.fallback must be %s or %s", asr.EngineSherpa, asr.FallbackNone)
 	}
 }
 

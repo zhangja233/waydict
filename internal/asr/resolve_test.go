@@ -116,3 +116,67 @@ func (e *resolveTestEngine) Loaded() bool { return e.loaded }
 func (e *resolveTestEngine) Transcribe(context.Context, AudioSegment) (Transcript, error) {
 	return Transcript{}, nil
 }
+
+func TestResolveRemoteWrapsTheConfiguredFallback(t *testing.T) {
+	tests := []struct {
+		name         string
+		fallback     string
+		wantFallback string
+		wantErr      bool
+	}{
+		{name: "sherpa fallback", fallback: EngineSherpa, wantFallback: EngineSherpa},
+		{name: "no fallback", fallback: FallbackNone},
+		{name: "unknown fallback", fallback: EngineWhisper, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var wrapped Engine
+			deps := ResolverDeps{
+				NewSherpa:      func() Engine { return &resolveTestEngine{name: EngineSherpa} },
+				RemoteFallback: tc.fallback,
+				NewRemote: func(fallback Engine) (Engine, error) {
+					wrapped = fallback
+					return &resolveTestEngine{name: EngineRemote}, nil
+				},
+			}
+			engine, resolution, err := Resolve(EngineRemote, "", 0, deps)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Resolve() error = %v, wantErr %t", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				return
+			}
+			if engine.Name() != EngineRemote || resolution.Engine != EngineRemote || resolution.Provider != ProviderRemote {
+				t.Fatalf("resolution = %+v, engine = %q", resolution, engine.Name())
+			}
+			if tc.wantFallback == "" {
+				if wrapped != nil {
+					t.Fatalf("wrapped %q, want no fallback", wrapped.Name())
+				}
+				return
+			}
+			if wrapped == nil || wrapped.Name() != tc.wantFallback {
+				t.Fatalf("wrapped %v, want %q", wrapped, tc.wantFallback)
+			}
+		})
+	}
+}
+
+// auto is the GPU-or-CPU choice; reaching another host is never implicit.
+func TestResolveAutoNeverPicksRemote(t *testing.T) {
+	deps := ResolverDeps{
+		NewSherpa:      func() Engine { return &resolveTestEngine{name: EngineSherpa} },
+		RemoteFallback: EngineSherpa,
+		NewRemote: func(Engine) (Engine, error) {
+			t.Fatal("auto resolved to the remote engine")
+			return nil, nil
+		},
+	}
+	_, resolution, err := Resolve(EngineAuto, "", 0, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Engine != EngineSherpa {
+		t.Fatalf("auto resolved to %q, want %q", resolution.Engine, EngineSherpa)
+	}
+}

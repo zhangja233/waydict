@@ -12,6 +12,7 @@ import (
 
 	"waydict/internal/apperr"
 	"waydict/internal/asr"
+	remoteasr "waydict/internal/asr/remote"
 	sherpaasr "waydict/internal/asr/sherpa"
 	"waydict/internal/audio"
 	"waydict/internal/config"
@@ -468,6 +469,10 @@ func resolveRuntimeASR(cfg config.Config, opts RuntimeOptions) (asr.Engine, asr.
 				return "", apperr.New(apperr.CodeASRModelInvalid, "validate whisper model", fmt.Errorf("%s is not a regular file", path))
 			}
 			return path, nil
+		},
+		RemoteFallback: cfg.ASR.Remote.Fallback,
+		NewRemote: func(fallback asr.Engine) (asr.Engine, error) {
+			return remoteasr.New(remoteasr.OptionsFromConfig(cfg), fallback), nil
 		},
 	}
 	if opts.ProbeAccelerator != nil {

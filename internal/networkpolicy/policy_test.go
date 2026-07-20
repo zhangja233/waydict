@@ -59,8 +59,10 @@ func TestOutboundNetworkImportsMatchAllowlist(t *testing.T) {
 				}
 			}
 		}
-		if relative == "internal/control" || relative == "internal/swayipc" {
-			assertUnixSocketCalls(t, path, parsed)
+		for _, pkg := range UnixOnlyPackages {
+			if relative == pkg {
+				assertUnixSocketCalls(t, path, parsed)
+			}
 		}
 		return nil
 	})

@@ -36,6 +36,9 @@ var ErrAlreadyRunning = errors.New("control server already running")
 const (
 	MaxControlFrameBytes = 512 * 1024
 	MaxInjectTextBytes   = 64 * 1024
+	// A 20s segment of 16 kHz mono int16 is 640 KiB; the rest is headroom for
+	// longer segments and for compressed codecs added later.
+	MaxPayloadBytes = 4 * 1024 * 1024
 )
 
 type Server struct {
@@ -94,7 +97,10 @@ func (s *Server) Serve(ctx context.Context) error {
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	frame, err := readFrame(conn)
+	// One reader for both the JSON line and any payload behind it: a second
+	// reader would lose whatever the first buffered past the LF.
+	reader := bufio.NewReader(conn)
+	frame, err := readFrame(reader)
 	if err != nil {
 		writeResponse(conn, Fail("", "protocol_error", err.Error(), zeroStatus()))
 		return
@@ -108,22 +114,54 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		writeResponse(conn, Fail(req.ID, "protocol_error", "unsupported protocol version", zeroStatus()))
 		return
 	}
+	if req.Payload, err = readPayload(reader, req.Args); err != nil {
+		writeResponse(conn, Fail(req.ID, "protocol_error", err.Error(), zeroStatus()))
+		return
+	}
 	writeResponse(conn, s.handler.HandleControl(ctx, req))
 }
 
 func Send(ctx context.Context, socket string, req Request) (Response, error) {
+	return SendWithPayload(ctx, socket, req, nil, 0)
+}
+
+// SendWithPayload writes req followed by a length-declared binary body. A
+// non-zero dialTimeout bounds connection setup separately from ctx, so an
+// unreachable peer is reported in microseconds instead of at the request
+// deadline — the difference between a snappy fallback and a stalled decode.
+func SendWithPayload(ctx context.Context, socket string, req Request, payload []byte, dialTimeout time.Duration) (Response, error) {
 	if err := ValidateSocketPath(socket); err != nil {
 		return Response{}, err
 	}
 	if err := checkSocketOwner(socket); err != nil {
 		return Response{}, err
 	}
+	if len(payload) > 0 {
+		if len(payload) > MaxPayloadBytes {
+			return Response{}, fmt.Errorf("control payload exceeds %d bytes", MaxPayloadBytes)
+		}
+		args := make(map[string]any, len(req.Args)+1)
+		for key, value := range req.Args {
+			args[key] = value
+		}
+		args["payload_bytes"] = len(payload)
+		req.Args = args
+	}
+	dialCtx := ctx
+	if dialTimeout > 0 {
+		var cancel context.CancelFunc
+		dialCtx, cancel = context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
+	}
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", socket)
+	conn, err := d.DialContext(dialCtx, "unix", socket)
 	if err != nil {
 		return Response{}, err
 	}
 	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
 	frame, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, err
@@ -134,6 +172,11 @@ func Send(ctx context.Context, socket string, req Request) (Response, error) {
 	frame = append(frame, '\n')
 	if _, err := conn.Write(frame); err != nil {
 		return Response{}, err
+	}
+	if len(payload) > 0 {
+		if _, err := conn.Write(payload); err != nil {
+			return Response{}, err
+		}
 	}
 	var resp Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
@@ -270,13 +313,25 @@ func ValidateSocketPathFor(platform, socket string) error {
 	return nil
 }
 
-func readFrame(r io.Reader) ([]byte, error) {
-	reader := bufio.NewReader(io.LimitReader(r, MaxControlFrameBytes+2))
-	line, err := reader.ReadBytes('\n')
-	if len(line) > MaxControlFrameBytes+1 {
-		return nil, fmt.Errorf("control frame exceeds %d bytes", MaxControlFrameBytes)
+// readFrame consumes one LF-terminated JSON line, leaving anything after the LF
+// for readPayload. It accumulates through the reader's own buffer rather than an
+// io.LimitReader so the cap applies to the line alone, not to the payload too.
+func readFrame(r *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > MaxControlFrameBytes+1 {
+			return nil, fmt.Errorf("control frame exceeds %d bytes", MaxControlFrameBytes)
+		}
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, fmt.Errorf("control frame is missing its LF terminator")
+		}
 	}
-	if err != nil || len(line) == 0 || line[len(line)-1] != '\n' {
+	if len(line) == 0 || line[len(line)-1] != '\n' {
 		return nil, fmt.Errorf("control frame is missing its LF terminator")
 	}
 	frame := line[:len(line)-1]
@@ -287,6 +342,47 @@ func readFrame(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("control frame is not valid UTF-8")
 	}
 	return frame, nil
+}
+
+// readPayload reads the binary body a request declared through payload_bytes.
+// Requests without the arg read nothing, which keeps every existing command
+// wire-compatible.
+func readPayload(r *bufio.Reader, args map[string]any) ([]byte, error) {
+	size, err := PayloadBytes(args)
+	if err != nil || size == 0 {
+		return nil, err
+	}
+	payload := make([]byte, size)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, fmt.Errorf("control payload is shorter than its declared %d bytes", size)
+	}
+	return payload, nil
+}
+
+// PayloadBytes reads the declared payload length out of a request's args.
+func PayloadBytes(args map[string]any) (int, error) {
+	value, ok := args["payload_bytes"]
+	if !ok {
+		return 0, nil
+	}
+	var size int64
+	switch value := value.(type) {
+	case float64:
+		size = int64(value)
+		if float64(size) != value {
+			return 0, fmt.Errorf("payload_bytes must be an integer")
+		}
+	case int:
+		size = int64(value)
+	case int64:
+		size = value
+	default:
+		return 0, fmt.Errorf("payload_bytes must be an integer")
+	}
+	if size < 0 || size > MaxPayloadBytes {
+		return 0, fmt.Errorf("payload_bytes must be between 0 and %d", MaxPayloadBytes)
+	}
+	return int(size), nil
 }
 
 func writeResponse(conn net.Conn, resp Response) {

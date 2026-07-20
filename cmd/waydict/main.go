@@ -18,6 +18,7 @@ import (
 	"waydict/internal/app"
 	"waydict/internal/apperr"
 	"waydict/internal/asr"
+	remoteasr "waydict/internal/asr/remote"
 	sherpaasr "waydict/internal/asr/sherpa"
 	"waydict/internal/audio"
 	"waydict/internal/buildinfo"
@@ -775,6 +776,13 @@ func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 				return "", fmt.Errorf("%s is not a regular file", path)
 			}
 			return path, nil
+		},
+		// So `transcribe --file` and `bench` exercise the same remote path the
+		// daemon uses, which makes them the cheapest end-to-end check of a
+		// tunnel — no microphone, no daemon.
+		RemoteFallback: cfg.ASR.Remote.Fallback,
+		NewRemote: func(fallback asr.Engine) (asr.Engine, error) {
+			return remoteasr.New(remoteasr.OptionsFromConfig(cfg), fallback), nil
 		},
 	}
 	if probeGPUHook != nil {

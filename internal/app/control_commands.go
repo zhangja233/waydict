@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"waydict/internal/apperr"
+	"waydict/internal/asr"
 	"waydict/internal/audio"
 	"waydict/internal/config"
 	"waydict/internal/control"
@@ -60,6 +61,8 @@ func (a *App) handleExtendedControl(ctx context.Context, req control.Request) (c
 		}
 		a.logInfo("inject text request", "text_bytes", len([]byte(text)), "request_id", req.ID, "peer_uid", peerUID, "result", "ok")
 		return control.OK(req.ID, a.Status(ctx)), true
+	case "transcribe":
+		return a.serveRemoteTranscribe(ctx, req), true
 	case "list_audio_devices":
 		devices, err := a.audioDevices(ctx)
 		if err != nil {
@@ -146,6 +149,70 @@ func (a *App) handleExtendedControl(ctx context.Context, req control.Request) (c
 	default:
 		return control.Response{}, false
 	}
+}
+
+// serveRemoteTranscribe lends this host's engine to a peer. It is deliberately
+// a pure decode service: no session state, no post-processing, no injection,
+// and no focus guard — the client's own daemon owns all of that. Nothing here
+// touches status beyond the RTF the local path also records.
+func (a *App) serveRemoteTranscribe(ctx context.Context, req control.Request) control.Response {
+	fail := func(code string, err error) control.Response {
+		return control.Fail(req.ID, code, err.Error(), a.peerStatus(ctx))
+	}
+	a.mu.Lock()
+	enabled := a.cfg.Daemon.ServeRemoteASR
+	engine := a.engine
+	a.mu.Unlock()
+	if !enabled {
+		return fail("not_permitted", fmt.Errorf("daemon.serve_remote_asr is disabled"))
+	}
+	if engine == nil {
+		return fail(apperr.CodeASRBackendUnavailable, fmt.Errorf("ASR engine is unavailable"))
+	}
+	segment, err := asr.DecodeSegment(req.Args, req.Payload)
+	if err != nil {
+		return fail("usage", err)
+	}
+	peerUID, _ := control.PeerUID(ctx)
+	timeout := asrTimeout(segment.Duration)
+	a.logInfo("remote asr decode start",
+		"request_id", req.ID, "peer_uid", peerUID, "timeout_ms", timeout.Milliseconds(),
+		"segment_id", segment.ID, "audio_ms", segment.Duration.Milliseconds(), "samples", len(segment.Samples))
+	tctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// The same lock the ASR worker holds: whisper.cpp serializes internally, but
+	// relying on that would make a local dictation and a peer's request race on
+	// whichever engine happens to be loaded.
+	a.decodeMu.Lock()
+	if err := engine.Load(tctx); err != nil {
+		a.decodeMu.Unlock()
+		return fail(codeFor(err), err)
+	}
+	transcript, err := engine.Transcribe(tctx, segment)
+	a.decodeMu.Unlock()
+	if err != nil {
+		a.logWarn("remote asr decode failed", "request_id", req.ID, "segment_id", segment.ID, "error", err)
+		return fail(recognitionErrorCode(err), err)
+	}
+	a.mu.Lock()
+	a.status.ASR.LastRTF = transcript.RealTimeFactor
+	a.mu.Unlock()
+	// Byte counts and timings only: the transcript itself goes to the peer in
+	// the response body and must not reach this host's log.
+	a.logInfo("remote asr decode complete",
+		"request_id", req.ID, "segment_id", segment.ID, "empty", transcript.Empty,
+		"text_bytes", len(transcript.Text), "audio_ms", transcript.AudioDuration.Milliseconds(),
+		"decode_ms", transcript.DecodeDuration.Milliseconds(), "rtf", transcript.RealTimeFactor)
+	return control.OKData(req.ID, a.peerStatus(ctx), asr.EncodeTranscript(transcript))
+}
+
+// peerStatus is the status a borrowing client sees. The client ignores it — its
+// own daemon owns the session — so there is no reason to ship this host's
+// transcript or focused-window details along with a decode.
+func (a *App) peerStatus(ctx context.Context) api.Status {
+	status := a.Status(ctx)
+	redactSensitiveStatus(&status)
+	return status
 }
 
 func (a *App) capabilityData() map[string]any {

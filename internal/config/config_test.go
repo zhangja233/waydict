@@ -320,6 +320,45 @@ func TestValidateASREngineMatrix(t *testing.T) {
 			c.ASR.Provider = asr.ProviderCPU
 			c.ASR.ModelDir = ""
 		}, wantErr: true},
+		{name: "remote defaults", edit: func(c *Config) { c.ASR.Engine = asr.EngineRemote }},
+		{name: "remote without fallback ignores sherpa shape", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.Fallback = asr.FallbackNone
+			c.ASR.ModelDir = ""
+			c.ASR.Encoder = ""
+		}},
+		{name: "remote validates its fallback's shape", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.ModelDir = ""
+		}, wantErr: true},
+		{name: "remote requires a socket", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.Socket = ""
+		}, wantErr: true},
+		{name: "remote rejects an over-long socket path", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.Socket = "/" + strings.Repeat("x", 200)
+		}, wantErr: true},
+		{name: "remote rejects the daemon's own socket", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.Socket = c.Daemon.Socket
+		}, wantErr: true},
+		{name: "remote rejects an unknown codec", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.Codec = "opus"
+		}, wantErr: true},
+		{name: "remote rejects an unknown fallback", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.Fallback = "whisper-cpp"
+		}, wantErr: true},
+		{name: "remote rejects a non-positive dial timeout", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.DialTimeoutMS = 0
+		}, wantErr: true},
+		{name: "remote rejects a non-positive request timeout", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineRemote
+			c.ASR.Remote.RequestTimeoutMS = -1
+		}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

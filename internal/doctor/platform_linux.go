@@ -47,7 +47,7 @@ func (linuxRegistry) Checks(ctx context.Context, cfg config.Config) []Result {
 	fctx, cancel := context.WithTimeout(ctx, time.Second)
 	results = append(results, errorResult("Sway IPC", focus.Available(fctx)))
 	cancel()
-	return results
+	return append(results, remoteASRResults(ctx, cfg)...)
 }
 
 func vulkanResult() Result {

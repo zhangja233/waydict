@@ -111,12 +111,25 @@ type ASRStatus struct {
 	// ResolvedProvider is the requested provider until Loaded is true; after
 	// load it reflects the backend the native library actually selected, and
 	// GPUName is only set once a GPU backend is confirmed.
-	ResolvedProvider string  `json:"resolved_provider"`
-	GPUName          string  `json:"gpu_name"`
-	FallbackReason   string  `json:"fallback_reason"`
-	NumThreads       int     `json:"num_threads"`
-	Loaded           bool    `json:"loaded"`
-	LastRTF          float64 `json:"last_rtf"`
+	ResolvedProvider string           `json:"resolved_provider"`
+	GPUName          string           `json:"gpu_name"`
+	FallbackReason   string           `json:"fallback_reason"`
+	NumThreads       int              `json:"num_threads"`
+	Loaded           bool             `json:"loaded"`
+	LastRTF          float64          `json:"last_rtf"`
+	Remote           *ASRRemoteStatus `json:"remote,omitempty"`
+}
+
+// ASRRemoteStatus is present only for engine = "remote". It answers "did that
+// segment decode on the peer's GPU or quietly on this laptop's CPU?", which is
+// otherwise invisible because both produce text.
+type ASRRemoteStatus struct {
+	Socket string `json:"socket"`
+	// Served is "remote" or "fallback"; empty before the first segment.
+	Served    string  `json:"served,omitempty"`
+	Fallback  string  `json:"fallback,omitempty"`
+	LastError string  `json:"last_error,omitempty"`
+	LastRTF   float64 `json:"last_rtf,omitempty"`
 }
 
 type InjectionStatus struct {

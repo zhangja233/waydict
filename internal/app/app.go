@@ -110,6 +110,7 @@ type App struct {
 	mu               sync.Mutex
 	audioRecreateMu  sync.Mutex
 	segMu            sync.Mutex // serializes segmenter access (silero VAD is not concurrency-safe)
+	decodeMu         sync.Mutex // serializes the engine between the ASR worker and remote clients
 	status           api.Status
 	startedAt        time.Time
 	sessionCancel    context.CancelFunc
@@ -962,6 +963,16 @@ func (a *App) Status(ctx context.Context) api.Status {
 	}
 	if a.engine != nil {
 		st.ASR.Loaded = a.engine.Loaded()
+		if reporter, ok := a.engine.(asr.RemoteReporter); ok {
+			remote := reporter.RemoteStatus()
+			st.ASR.Remote = &api.ASRRemoteStatus{
+				Socket:    remote.Socket,
+				Served:    remote.Served,
+				Fallback:  remote.Fallback,
+				LastError: remote.LastError,
+				LastRTF:   remote.LastRTF,
+			}
+		}
 	}
 	a.mu.Unlock()
 	if a.injector != nil {
@@ -1014,12 +1025,15 @@ func (a *App) Status(ctx context.Context) api.Status {
 		st.ModelInstall = a.hostActions.ModelInstallStatus()
 	}
 	if a.capabilities.Host == "macos_app" {
-		redactMacOSStatus(&st)
+		redactSensitiveStatus(&st)
 	}
 	return st
 }
 
-func redactMacOSStatus(st *api.Status) {
+// redactSensitiveStatus strips everything that describes what the local user is
+// dictating or looking at. Applied before status crosses a boundary: to the
+// macOS app host, and to a peer borrowing this host's ASR engine.
+func redactSensitiveStatus(st *api.Status) {
 	st.LastTranscriptRedacted = true
 	st.LastTranscript = ""
 	st.LastUninjectedText = ""
@@ -1435,7 +1449,9 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	tctx, cancel := context.WithTimeout(ctx, asrTimeout(seg.Duration))
 	timeout := asrTimeout(seg.Duration)
 	a.logInfo("asr decode start", append([]any{"session", job.session, "timeout_ms", timeout.Milliseconds()}, segmentLogAttrs(seg)...)...)
+	a.decodeMu.Lock()
 	tr, err := a.engine.Transcribe(tctx, seg)
+	a.decodeMu.Unlock()
 	cancel()
 	if err != nil {
 		if a.sessionDiscarded(job.session) {
@@ -1451,14 +1467,15 @@ func (a *App) handleSegment(ctx context.Context, job segmentJob) {
 	a.mu.Lock()
 	a.status.ASR.LastRTF = tr.RealTimeFactor
 	a.mu.Unlock()
-	a.logInfo("asr decode complete",
+	a.logInfo("asr decode complete", append([]any{
 		"session", job.session,
 		"segment_id", seg.ID,
 		"empty", tr.Empty,
 		"text_bytes", len(tr.Text),
 		"audio_ms", tr.AudioDuration.Milliseconds(),
 		"decode_ms", tr.DecodeDuration.Milliseconds(),
-		"rtf", tr.RealTimeFactor)
+		"rtf", tr.RealTimeFactor,
+	}, remoteLogAttrs(a.engine)...)...)
 	if tr.Empty {
 		a.setState(a.nextState())
 		return
@@ -1593,6 +1610,21 @@ func safeSegmentFilename(id string) string {
 
 func recognitionErrorCode(err error) string {
 	return apperr.CodeRecognitionFailed
+}
+
+// remoteLogAttrs says which side decoded, and why the peer was skipped when it
+// was. Without it a silent drop to local CPU looks exactly like a slow GPU.
+func remoteLogAttrs(engine asr.Engine) []any {
+	reporter, ok := engine.(asr.RemoteReporter)
+	if !ok {
+		return nil
+	}
+	status := reporter.RemoteStatus()
+	attrs := []any{"served", status.Served}
+	if status.LastError != "" {
+		attrs = append(attrs, "remote_error", status.LastError)
+	}
+	return attrs
 }
 
 func (a *App) nextState() api.State {

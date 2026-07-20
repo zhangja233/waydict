@@ -4,6 +4,9 @@ preload_model = true
 auto_stop_after_silence_seconds = 120
 redact_transcripts_in_logs = true
 log_level = "info"
+# Answer `transcribe` from peers, lending this host's engine to clients that can
+# reach the control socket. Enable it only on the machine holding the GPU.
+serve_remote_asr = false
 
 [audio]
 backend = "pipewire"
@@ -44,6 +47,16 @@ encoder = "encoder.onnx"
 decoder = "decoder.onnx"
 joiner = "joiner.onnx"
 tokens = "tokens.txt"
+
+# Only read when engine = "remote": decode on the daemon behind socket, which an
+# SSH -L forward points at another host. The [asr] keys above then configure the
+# fallback used whenever that host is unreachable.
+[asr.remote]
+socket = "$XDG_RUNTIME_DIR/waydict/asr-remote.sock"
+codec = "pcm_s16le"
+dial_timeout_ms = 300
+request_timeout_ms = 8000
+fallback = "sherpa-onnx"   # or "none" to fail instead of decoding locally
 
 [injection]
 engine = "wtype"
