@@ -8,25 +8,23 @@
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       darwinSystems = [ "aarch64-darwin" "x86_64-darwin" ];
       forSystems = systems: f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      # CUDA needs an unfree-permitting nixpkgs — legacyPackages carries no config. Kept as
+      # a function so it is only forced on the cuda path; the default stays free and cached.
+      cudaPkgsFor = pkgs: import nixpkgs {
+        inherit (pkgs.stdenv.hostPlatform) system;
+        config = {
+          allowUnfree = true;
+          cudaSupport = true;
+        };
+      };
       # libwhisper carrying the ggml backend a given asr.provider needs. The binary links
       # one backend, so "which provider" is a build-time choice, not a runtime flag.
-      #
-      # CUDA needs an unfree-permitting nixpkgs — legacyPackages carries no config — so it
-      # is imported lazily here. The default vulkan path never forces that import and stays
-      # free and binary-cached; the cuda path compiles whisper.cpp locally.
       whisperFor = pkgs: backend:
         let
           base =
-            if backend == "cuda" then
-              (import nixpkgs {
-                inherit (pkgs.stdenv.hostPlatform) system;
-                config = {
-                  allowUnfree = true;
-                  cudaSupport = true;
-                };
-              }).whisper-cpp
-            else
-              pkgs.whisper-cpp-vulkan;
+            if backend == "cuda"
+            then (cudaPkgsFor pkgs).whisper-cpp
+            else pkgs.whisper-cpp-vulkan;
         in
         base.overrideAttrs (old: {
           # The cgo integration links backends directly and does not call ggml_backend_load_all.
@@ -104,6 +102,15 @@
 
           env.CGO_ENABLED = "1";
           env.CGO_CFLAGS_ALLOW = "-fno-strict-overflow";
+          # libggml-cuda.so leaves CUDA driver symbols (cuMemGetAllocationGranularity and
+          # friends) undefined — they live in libcuda.so, which ships with the driver, not
+          # the toolkit. Link against cudart's stub so ld can resolve them; the real
+          # library is found at runtime through the driver runpath stamped in above.
+          env.CGO_LDFLAGS = pkgs.lib.optionalString (withWhisper && whisperBackend == "cuda")
+            "-L${(cudaPkgsFor pkgs).cudaPackages.cuda_cudart}/lib/stubs -lcuda";
+          # The stub is link-time only; nothing in the store provides libcuda.so.1.
+          autoPatchelfIgnoreMissingDeps =
+            pkgs.lib.optionals (withWhisper && whisperBackend == "cuda") [ "libcuda.so.1" ];
 
           # The sherpa-onnx-go module ships prebuilt .so files and links the
           # binary with an rpath into the (GC-able) Go module cache. Copy them
