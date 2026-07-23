@@ -76,7 +76,12 @@ type ResolverDeps struct {
 func Resolve(engine, provider string, device int, deps ResolverDeps) (Engine, Resolution, error) {
 	switch engine {
 	case EngineSherpa:
-		return deps.NewSherpa(), Resolution{Engine: EngineSherpa, Provider: ProviderCPU}, nil
+		// Report the configured provider so status/doctor reflect GPU vs CPU decode.
+		sherpaProvider := provider
+		if sherpaProvider == "" {
+			sherpaProvider = ProviderCPU
+		}
+		return deps.NewSherpa(), Resolution{Engine: EngineSherpa, Provider: sherpaProvider}, nil
 
 	case EngineWhisper:
 		eng, res, err := resolveWhisper(provider, device, deps)

@@ -454,7 +454,9 @@ func resolveRuntimeASR(cfg config.Config, opts RuntimeOptions) (asr.Engine, asr.
 	}
 	preferred := config.PreferredWhisperProviderFor(platform)
 	sherpaCfg := cfg.ASR
-	sherpaCfg.Provider = asr.ProviderCPU
+	if sherpaCfg.Provider == "" {
+		sherpaCfg.Provider = asr.ProviderCPU
+	}
 	deps := asr.ResolverDeps{
 		PreferredWhisperProvider: preferred,
 		NumThreads:               cfg.ASR.NumThreads,
