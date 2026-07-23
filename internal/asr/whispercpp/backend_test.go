@@ -17,6 +17,33 @@ func TestBackendDetectorVulkan(t *testing.T) {
 	}
 }
 
+// Line shapes are verbatim from whisper.cpp built with GGML_CUDA: a header line,
+// then one indented Device line per GPU. Unlike Vulkan's single line, the device
+// name is comma-terminated rather than pipe-terminated.
+func TestBackendDetectorCUDA(t *testing.T) {
+	var detector backendDetector
+	detector.observe("ggml_cuda_init: found 1 CUDA devices (Total VRAM: 16384 MiB):\n")
+	detector.observe("  Device 0: NVIDIA GeForce GPU, compute capability 12.0, VMM: yes, VRAM: 16384 MiB\n")
+	detector.observe("whisper_backend_init_gpu: using CUDA0 backend\n")
+
+	report := detector.backend()
+	if report.Provider != asr.ProviderCUDA || report.DeviceName != "NVIDIA GeForce GPU" || !report.GPU {
+		t.Fatalf("backend = %+v, want detected CUDA device", report)
+	}
+}
+
+// A bare "Device 0: ..." line without the ggml_cuda_init header must not register:
+// other backends print similar lines and would otherwise be claimed as CUDA.
+func TestBackendDetectorCUDADeviceLineNeedsHeader(t *testing.T) {
+	var detector backendDetector
+	detector.observe("  Device 0: Some Other Accelerator, revision 3\n")
+	detector.observe("whisper_backend_init_gpu: using CUDA0 backend\n")
+
+	if report := detector.backend(); report.DeviceName != "CUDA0" {
+		t.Fatalf("DeviceName = %q, want the raw backend name with no device claimed", report.DeviceName)
+	}
+}
+
 func TestBackendDetectorMetal(t *testing.T) {
 	var detector backendDetector
 	detector.observe("ggml_metal_library_init: using embedded metal library\n")

@@ -46,7 +46,11 @@ func CapabilitySetFor(platform string) CapabilitySet {
 			AudioBackends:    []string{"pipewire"},
 			InjectionEngines: []string{"wtype"},
 			FocusBackends:    []string{"sway"},
-			WhisperProviders: []string{"cpu", "vulkan"},
+			// PreferredWhisperProviderFor takes the first non-cpu entry, so vulkan stays
+			// the default. CUDA is offered but not preferred: it has not measured faster
+			// for Whisper's encoder, which dominates short dictation clips. Set
+			// asr.provider explicitly to override.
+			WhisperProviders: []string{"cpu", "vulkan", "cuda"},
 			SherpaProviders:  []string{"cpu"},
 		}
 	default:

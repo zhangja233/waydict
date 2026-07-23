@@ -9,6 +9,9 @@ import (
 type backendDetector struct {
 	devices map[string]string
 	report  asr.BackendReport
+	// Set once ggml_cuda_init announces itself; the per-device lines that follow
+	// are bare "Device N: ..." and would otherwise be too generic to claim.
+	cudaInit bool
 }
 
 func (d *backendDetector) observe(text string) {
@@ -31,6 +34,29 @@ func (d *backendDetector) observeLine(line string) {
 				}
 				d.devices["Vulkan"+index] = name
 			}
+		}
+	}
+
+	// CUDA prints a header then one indented line per GPU:
+	//   ggml_cuda_init: found 1 CUDA devices (Total VRAM: 15846 MiB):
+	//     Device 0: NVIDIA GeForce RTX 5060 Ti, compute capability 12.0, VMM: yes
+	if strings.HasPrefix(line, "ggml_cuda_init:") {
+		d.cudaInit = true
+		return
+	}
+	if d.cudaInit {
+		if rest, ok := strings.CutPrefix(line, "Device "); ok {
+			if index, detail, ok := strings.Cut(rest, ": "); ok {
+				name, _, _ := strings.Cut(detail, ",")
+				name = strings.TrimSpace(name)
+				if index != "" && name != "" {
+					if d.devices == nil {
+						d.devices = make(map[string]string)
+					}
+					d.devices["CUDA"+index] = name
+				}
+			}
+			return
 		}
 	}
 	if marker := "GPU name:"; strings.Contains(line, marker) && strings.Contains(line, "ggml_metal") {
@@ -84,6 +110,8 @@ func backendProvider(name string) string {
 		return asr.ProviderMetal
 	case strings.HasPrefix(name, "Vulkan"):
 		return asr.ProviderVulkan
+	case strings.HasPrefix(name, "CUDA"):
+		return asr.ProviderCUDA
 	default:
 		return ""
 	}

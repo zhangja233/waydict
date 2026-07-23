@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -20,7 +21,39 @@ func init() {
 			UseGPU:     useGPU,
 		})
 	}
-	probeGPUHook = probeVulkanGPU
+	probeGPUHook = probeGPU
+}
+
+// probeGPU gates each provider on its own runtime. Probing whichever GPU stack
+// happens to be installed would let a forced provider pass on the strength of a
+// different one — a Vulkan ICD says nothing about CUDA being usable.
+func probeGPU(provider string) (string, error) {
+	switch provider {
+	case asr.ProviderCUDA:
+		return probeCUDAGPU()
+	case asr.ProviderVulkan, "":
+		return probeVulkanGPU()
+	default:
+		return "", fmt.Errorf("unsupported accelerator provider %q on linux", provider)
+	}
+}
+
+// probeCUDAGPU checks the driver's character devices rather than libcuda.so: the
+// library lives in the driver tree (/run/opengl-driver/lib on NixOS) and is not
+// reliably on the loader path, whereas /dev/nvidiactl plus a numbered node means
+// the kernel modules are loaded and bound to hardware.
+func probeCUDAGPU() (string, error) {
+	if _, err := os.Stat("/dev/nvidiactl"); err != nil {
+		return "", errors.New("no /dev/nvidiactl; nvidia kernel modules not loaded")
+	}
+	nodes, _ := filepath.Glob("/dev/nvidia[0-9]*")
+	for _, node := range nodes {
+		if f, err := os.OpenFile(node, os.O_RDWR, 0); err == nil {
+			f.Close()
+			return "cuda device via " + filepath.Base(node), nil
+		}
+	}
+	return "", errors.New("no accessible nvidia device node")
 }
 
 // probeVulkanGPU is a cheap pre-init gate: an installed Vulkan ICD plus a DRM

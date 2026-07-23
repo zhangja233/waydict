@@ -20,7 +20,7 @@ func Current() Services {
 		audioBackends = []string{"pipewire"}
 	}
 	if buildinfo.WhisperEnabled {
-		whisperProviders = []string{asr.ProviderCPU, asr.ProviderVulkan}
+		whisperProviders = []string{asr.ProviderCPU, asr.ProviderVulkan, asr.ProviderCUDA}
 	}
 	if buildinfo.SherpaEnabled {
 		sherpaProviders = []string{asr.ProviderCPU}

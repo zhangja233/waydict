@@ -280,7 +280,7 @@ func TestValidateASREngineMatrix(t *testing.T) {
 			c.ASR.ModelType = ""
 			c.ASR.NumThreads = 0
 		}},
-		{name: "auto rejects provider", edit: func(c *Config) { c.ASR.Provider = "cuda" }, wantErr: true},
+		{name: "auto rejects provider", edit: func(c *Config) { c.ASR.Provider = "rocm" }, wantErr: true},
 		{name: "whisper cpu", edit: func(c *Config) {
 			c.ASR.Engine = asr.EngineWhisper
 			c.ASR.Provider = asr.ProviderCPU
@@ -291,13 +291,17 @@ func TestValidateASREngineMatrix(t *testing.T) {
 			c.ASR.Engine = asr.EngineWhisper
 			c.ASR.Provider = asr.ProviderVulkan
 		}},
+		{name: "whisper cuda", edit: func(c *Config) {
+			c.ASR.Engine = asr.EngineWhisper
+			c.ASR.Provider = asr.ProviderCUDA
+		}},
 		{name: "whisper empty defaults logically", edit: func(c *Config) {
 			c.ASR.Engine = asr.EngineWhisper
 			c.ASR.Provider = ""
 		}},
 		{name: "whisper rejects provider", edit: func(c *Config) {
 			c.ASR.Engine = asr.EngineWhisper
-			c.ASR.Provider = "cuda"
+			c.ASR.Provider = "rocm"
 		}, wantErr: true},
 		{name: "whisper requires model", edit: func(c *Config) {
 			c.ASR.Engine = asr.EngineWhisper

@@ -12,6 +12,7 @@ const (
 	ProviderCPU    = "cpu"
 	ProviderMetal  = "metal"
 	ProviderVulkan = "vulkan"
+	ProviderCUDA   = "cuda"
 	ProviderRemote = "remote"
 
 	// FallbackNone opts a remote engine out of local decoding entirely.

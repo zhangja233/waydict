@@ -229,7 +229,7 @@ func TestBenchRejectsInvalidASRConfig(t *testing.T) {
 	}
 	path := writeConfig(t, `
 [asr]
-provider = "cuda"
+provider = "rocm"
 `)
 	var out, err bytes.Buffer
 	if got := run([]string{"bench", "--config", path, "--file", "sample.wav"}, &out, &err); got != exitcode.ModelInvalid {
@@ -322,7 +322,7 @@ func TestAutoLoadFailureFallsBackToSherpa(t *testing.T) {
 	newWhisperEngineHook = func(string, int, int, bool) (asr.Engine, error) {
 		return fakeEngine{err: errors.New("vulkan allocation failed")}, nil
 	}
-	probeGPUHook = func() (string, error) { return "test gpu", nil }
+	probeGPUHook = func(string) (string, error) { return "test gpu", nil }
 	newASREngine = func(config.ASR) asr.Engine {
 		return fakeEngine{transcript: asr.Transcript{Text: "fallback"}}
 	}

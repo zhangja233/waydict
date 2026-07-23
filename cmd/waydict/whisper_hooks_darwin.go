@@ -3,6 +3,8 @@
 package main
 
 import (
+	"fmt"
+
 	"waydict/internal/asr"
 	"waydict/internal/asr/whispercpp"
 )
@@ -16,7 +18,11 @@ func init() {
 			UseGPU:     useGPU,
 		})
 	}
-	probeGPUHook = func() (string, error) {
+	probeGPUHook = func(provider string) (string, error) {
+		// Metal is the only accelerator here; CUDA is not a macOS provider at all.
+		if provider != asr.ProviderMetal && provider != "" {
+			return "", fmt.Errorf("unsupported accelerator provider %q on darwin", provider)
+		}
 		return "Metal device 0", nil
 	}
 }

@@ -21,7 +21,7 @@ type linuxRegistry struct{}
 func Current() Registry { return linuxRegistry{} }
 
 func (linuxRegistry) Checks(ctx context.Context, cfg config.Config) []Result {
-	results := []Result{vulkanResult()}
+	results := []Result{vulkanResult(), cudaResult()}
 	for _, name := range []string{"WAYLAND_DISPLAY", "SWAYSOCK", "XDG_RUNTIME_DIR"} {
 		var err error
 		if os.Getenv(name) == "" {
@@ -57,4 +57,18 @@ func vulkanResult() Result {
 		}
 	}
 	return Result{Level: Info, Name: "Vulkan ICD", Detail: "no ICD directory found; install a Vulkan driver if GPU ASR is desired"}
+}
+
+// cudaResult reports the kernel side only. A loaded driver does not imply the
+// binary was linked against a CUDA-enabled libwhisper — `waydict version` shows
+// which backends the build actually carries.
+func cudaResult() Result {
+	if _, err := os.Stat("/dev/nvidiactl"); err != nil {
+		return Result{Level: Info, Name: "CUDA driver", Detail: "no /dev/nvidiactl; nvidia kernel modules not loaded"}
+	}
+	nodes, _ := filepath.Glob("/dev/nvidia[0-9]*")
+	if len(nodes) == 0 {
+		return Result{Level: Info, Name: "CUDA driver", Detail: "/dev/nvidiactl present but no GPU device node"}
+	}
+	return Result{Level: Info, Name: "CUDA driver", Detail: fmt.Sprintf("found %d nvidia device node(s)", len(nodes))}
 }

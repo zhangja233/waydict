@@ -754,7 +754,9 @@ var (
 	newASREngine          = func(cfg config.ASR) asr.Engine { return sherpaasr.New(cfg) }
 	validateModelForUseFn = validateModelForUse
 	newWhisperEngineHook  func(modelPath string, device, threads int, useGPU bool) (asr.Engine, error)
-	probeGPUHook          func() (string, error)
+	// Takes the provider so a forced provider is gated on its own runtime, not
+	// whichever GPU stack happens to be installed.
+	probeGPUHook func(provider string) (string, error)
 )
 
 func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
@@ -787,7 +789,7 @@ func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 	}
 	if probeGPUHook != nil {
 		deps.ProbeAccelerator = func(provider string, device int) (asr.Accelerator, error) {
-			name, err := probeGPUHook()
+			name, err := probeGPUHook(provider)
 			return asr.Accelerator{Provider: provider, Device: device, Name: name}, err
 		}
 	}

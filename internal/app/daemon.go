@@ -12,7 +12,7 @@ type DaemonOptions struct {
 	ConfigPath       string
 	LogLevelOverride string
 	NewWhisper       func(modelPath string, device, threads int, useGPU bool) (asr.Engine, error)
-	ProbeGPU         func() (string, error)
+	ProbeGPU         func(provider string) (string, error)
 }
 
 func RunDaemon(ctx context.Context, cfg config.Config) error {
@@ -58,7 +58,7 @@ func RunDaemonWithOptions(ctx context.Context, cfg config.Config, opts DaemonOpt
 	}
 	if opts.ProbeGPU != nil {
 		runtimeOpts.ProbeAccelerator = func(provider string, device int) (asr.Accelerator, error) {
-			name, err := opts.ProbeGPU()
+			name, err := opts.ProbeGPU(provider)
 			return asr.Accelerator{Provider: provider, Device: device, Name: name}, err
 		}
 	}
