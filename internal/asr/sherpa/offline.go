@@ -49,7 +49,7 @@ func (e *Engine) Load(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	if e.cfg.Provider != "cpu" {
+	if e.cfg.Provider != "cpu" && e.cfg.Provider != "cuda" {
 		return fmt.Errorf("unsupported ASR provider %q", e.cfg.Provider)
 	}
 	paths := ModelPaths(e.cfg)
@@ -66,7 +66,7 @@ func (e *Engine) Load(ctx context.Context) error {
 			},
 			Tokens:     paths.Tokens,
 			NumThreads: e.cfg.NumThreads,
-			Provider:   "cpu",
+			Provider:   e.cfg.Provider,
 			ModelType:  e.cfg.ModelType,
 		},
 		DecodingMethod: e.cfg.DecodingMethod,

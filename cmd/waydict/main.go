@@ -763,7 +763,9 @@ func resolveASREngine(cfg config.Config) (asr.Engine, asr.Resolution, error) {
 	provider := cfg.ASR.Provider
 	preferred := config.PreferredWhisperProviderFor(cfg.Platform())
 	sherpaCfg := cfg.ASR
-	sherpaCfg.Provider = asr.ProviderCPU
+	if sherpaCfg.Provider == "" {
+		sherpaCfg.Provider = asr.ProviderCPU
+	}
 	deps := asr.ResolverDeps{
 		PreferredWhisperProvider: preferred,
 		NumThreads:               cfg.ASR.NumThreads,

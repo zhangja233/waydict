@@ -23,7 +23,7 @@ func Current() Services {
 		whisperProviders = []string{asr.ProviderCPU, asr.ProviderVulkan, asr.ProviderCUDA}
 	}
 	if buildinfo.SherpaEnabled {
-		sherpaProviders = []string{asr.ProviderCPU}
+		sherpaProviders = []string{asr.ProviderCPU, asr.ProviderCUDA}
 	}
 	return Services{
 		Capabilities: Capabilities{

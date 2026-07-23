@@ -51,7 +51,9 @@ func CapabilitySetFor(platform string) CapabilitySet {
 			// for Whisper's encoder, which dominates short dictation clips. Set
 			// asr.provider explicitly to override.
 			WhisperProviders: []string{"cpu", "vulkan", "cuda"},
-			SherpaProviders:  []string{"cpu"},
+			// cuda needs a GPU-enabled onnxruntime (the vendored .so is CPU-only) plus
+			// fp16/fp32 weights — int8 ops fall back to CPU on the CUDA EP.
+			SherpaProviders: []string{"cpu", "cuda"},
 		}
 	default:
 		return CapabilitySet{Platform: platform}
