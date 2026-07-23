@@ -51,7 +51,7 @@
           # go mod vendor strips the prebuilt sherpa .so (non-Go files); use the
           # module cache instead so the cgo link can find them.
           proxyVendor = true;
-          vendorHash = "sha256-mbvsfsuwCrW2TaVmBF1GZ6UfXgZvMfGpgYFa2I3G8Ck=";
+          vendorHash = "sha256-9JchK62+xVwSOfXQp3yOQRKmztNABuLYqMXbw2VIAXc=";
 
           tags = [ "sherpa" "pipewire" ] ++ pkgs.lib.optional withWhisper "whispercpp";
 
